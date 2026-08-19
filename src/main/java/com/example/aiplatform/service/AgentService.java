@@ -4,5 +4,5 @@ import com.example.aiplatform.model.AgentResponse;
 
 public interface AgentService {
 
-    AgentResponse handle(String customerId, String question);
+    AgentResponse handle(String customerId, String conversationId, String question);
 }

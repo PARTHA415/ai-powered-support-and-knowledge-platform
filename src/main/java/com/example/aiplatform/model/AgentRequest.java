@@ -10,6 +10,8 @@ import jakarta.validation.constraints.NotBlank;
 public record AgentRequest(
         @NotBlank(message = "customerId must not be blank")
         String customerId,
+        @NotBlank(message = "conversationId must not be blank")
+        String conversationId,
         @NotBlank(message = "message must not be blank")
         String message
 ) {

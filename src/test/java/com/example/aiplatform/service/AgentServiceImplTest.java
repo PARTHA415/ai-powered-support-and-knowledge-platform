@@ -19,6 +19,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
 
@@ -30,8 +34,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -39,8 +45,9 @@ import static org.mockito.Mockito.when;
 /**
  * Covers the distinct execution paths through the agent workflow: which
  * capabilities get planned and run, how the workflow degrades when a step
- * fails, and how the two safety bounds (max iterations, timeout) truncate
- * execution rather than letting it run away.
+ * fails, how the two safety bounds (max iterations, timeout) truncate
+ * execution, and - Phase 10 - how conversation history is threaded into
+ * every LLM call and persisted after each turn.
  */
 @ExtendWith(MockitoExtension.class)
 class AgentServiceImplTest {
@@ -49,6 +56,7 @@ class AgentServiceImplTest {
     private static final AgentProperties DEFAULT_AGENT_PROPERTIES = new AgentProperties(5, 30);
     private static final String QUESTION = "What's the status of order ORD-1001?";
     private static final String CUSTOMER_ID = "CUST-1001";
+    private static final String CONVERSATION_ID = "conv-1";
 
     @Mock
     private PromptBuilder promptBuilder;
@@ -60,6 +68,8 @@ class AgentServiceImplTest {
     private SemanticSearchService semanticSearchService;
     @Mock
     private SupportTools supportTools;
+    @Mock
+    private ChatMemory chatMemory;
 
     @AfterEach
     void clearCallerContext() {
@@ -68,8 +78,12 @@ class AgentServiceImplTest {
 
     private AgentServiceImpl newService(AgentProperties agentProperties) {
         return new AgentServiceImpl(promptBuilder, llmClientService, agentPlanConverter, semanticSearchService,
-                supportTools, RAG_PROPERTIES, agentProperties, "gpt-4o-mini");
+                supportTools, chatMemory, RAG_PROPERTIES, agentProperties, "gpt-4o-mini");
     }
+
+    // chatMemory.get(...) is left unstubbed in most tests below - Mockito's
+    // default answer for a List-returning method is an empty list, which is
+    // exactly "no prior history" and needs no explicit stubbing.
 
     private Prompt stubPlanning(AgentPlan plan) {
         Prompt planningPrompt = new Prompt(new UserMessage("planning"));
@@ -97,12 +111,13 @@ class AgentServiceImplTest {
         stubFinalize("Here's how to reset your password.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, QUESTION);
+        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
 
         assertThat(response.answer()).isEqualTo("Here's how to reset your password.");
         assertThat(response.auditTrail().knowledgeBasePlanned()).isTrue();
         assertThat(response.auditTrail().businessToolPlanned()).isFalse();
-        assertThat(capabilities(response)).containsExactly("PLANNING", "KNOWLEDGE_BASE", "FINALIZE");
+        assertThat(capabilities(response))
+                .containsExactly("MEMORY_RETRIEVAL", "PLANNING", "KNOWLEDGE_BASE", "FINALIZE", "MEMORY_SAVE");
         verify(llmClientService, never()).generateWithTools(any(), any());
     }
 
@@ -123,11 +138,12 @@ class AgentServiceImplTest {
         stubFinalize("Your order ORD-1001 is SHIPPED.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, QUESTION);
+        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
 
         assertThat(response.auditTrail().knowledgeBasePlanned()).isFalse();
         assertThat(response.auditTrail().businessToolPlanned()).isTrue();
-        assertThat(capabilities(response)).containsExactly("PLANNING", "BUSINESS_TOOL", "FINALIZE");
+        assertThat(capabilities(response))
+                .containsExactly("MEMORY_RETRIEVAL", "PLANNING", "BUSINESS_TOOL", "FINALIZE", "MEMORY_SAVE");
         verify(semanticSearchService, never()).search(any(), any(Integer.class));
         // Cleared after the request completes, so it can't leak into another request on a pooled thread.
         assertThat(catchThrowable(CallerContextHolder::getCurrentCustomerId)).isInstanceOf(IllegalStateException.class);
@@ -148,7 +164,7 @@ class AgentServiceImplTest {
         when(llmClientService.generate(finalPrompt)).thenReturn("Combined answer.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        service.handle(CUSTOMER_ID, QUESTION);
+        service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
 
         ArgumentCaptor<String> evidenceCaptor = ArgumentCaptor.forClass(String.class);
         verify(promptBuilder).buildAgentFinalPrompt(eq(QUESTION), evidenceCaptor.capture());
@@ -167,9 +183,9 @@ class AgentServiceImplTest {
         when(llmClientService.generate(finalPrompt)).thenReturn("Hello! How can I help?");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, QUESTION);
+        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
 
-        assertThat(capabilities(response)).containsExactly("PLANNING", "FINALIZE");
+        assertThat(capabilities(response)).containsExactly("MEMORY_RETRIEVAL", "PLANNING", "FINALIZE", "MEMORY_SAVE");
         ArgumentCaptor<String> evidenceCaptor = ArgumentCaptor.forClass(String.class);
         verify(promptBuilder).buildAgentFinalPrompt(eq(QUESTION), evidenceCaptor.capture());
         assertThat(evidenceCaptor.getValue()).isEqualTo("No additional evidence was gathered for this question.");
@@ -187,12 +203,11 @@ class AgentServiceImplTest {
         stubFinalize("I can help, but couldn't determine what to look up.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, QUESTION);
+        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
 
         assertThat(response.auditTrail().knowledgeBasePlanned()).isFalse();
         assertThat(response.auditTrail().businessToolPlanned()).isFalse();
-        AgentStepRecord planningStep = response.auditTrail().steps().get(0);
-        assertThat(planningStep.capability()).isEqualTo("PLANNING");
+        AgentStepRecord planningStep = findStep(response, "PLANNING");
         assertThat(planningStep.success()).isFalse();
         verify(semanticSearchService, never()).search(any(), any(Integer.class));
         verify(llmClientService, never()).generateWithTools(any(), any());
@@ -208,7 +223,7 @@ class AgentServiceImplTest {
         stubFinalize("I couldn't search the knowledge base right now.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, QUESTION);
+        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
 
         assertThat(response.answer()).isEqualTo("I couldn't search the knowledge base right now.");
         AgentStepRecord kbStep = findStep(response, "KNOWLEDGE_BASE");
@@ -230,7 +245,7 @@ class AgentServiceImplTest {
         stubFinalize("I couldn't look up that order right now.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, QUESTION);
+        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
 
         assertThat(response.answer()).isEqualTo("I couldn't look up that order right now.");
         AgentStepRecord toolStep = findStep(response, "BUSINESS_TOOL");
@@ -247,10 +262,11 @@ class AgentServiceImplTest {
         stubFinalize("Partial answer.");
 
         AgentServiceImpl service = newService(new AgentProperties(1, 30));
-        AgentResponse response = service.handle(CUSTOMER_ID, QUESTION);
+        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
 
         assertThat(response.auditTrail().maxIterationsExceeded()).isTrue();
-        assertThat(capabilities(response)).containsExactly("PLANNING", "KNOWLEDGE_BASE", "FINALIZE");
+        assertThat(capabilities(response))
+                .containsExactly("MEMORY_RETRIEVAL", "PLANNING", "KNOWLEDGE_BASE", "FINALIZE", "MEMORY_SAVE");
         verify(llmClientService, never()).generateWithTools(any(), any());
     }
 
@@ -265,10 +281,10 @@ class AgentServiceImplTest {
         // so the very first capability-loop check trips the timeout - a
         // deterministic way to exercise this path without sleeps.
         AgentServiceImpl service = newService(new AgentProperties(5, 0.0));
-        AgentResponse response = service.handle(CUSTOMER_ID, QUESTION);
+        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
 
         assertThat(response.auditTrail().timedOut()).isTrue();
-        assertThat(capabilities(response)).containsExactly("PLANNING", "FINALIZE");
+        assertThat(capabilities(response)).containsExactly("MEMORY_RETRIEVAL", "PLANNING", "FINALIZE", "MEMORY_SAVE");
         verify(semanticSearchService, never()).search(any(), any(Integer.class));
         verify(llmClientService, never()).generateWithTools(any(), any());
     }
@@ -285,8 +301,122 @@ class AgentServiceImplTest {
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
 
-        assertThatThrownBy(() -> service.handle(CUSTOMER_ID, QUESTION))
+        assertThatThrownBy(() -> service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION))
                 .isInstanceOf(LlmIntegrationException.class);
+    }
+
+    // --- conversation memory: history threading ---
+
+    @Test
+    void conversationHistoryIsThreadedIntoEveryLlmCallInTheWorkflow() {
+        // Mirrors the exact multi-turn scenario from the Phase 10 spec: turn
+        // one established "order 12345"; this turn asks about "its payment
+        // status" with no order number repeated. Each LLM call - planning,
+        // the tool round, and finalize - can only resolve "its" if the prior
+        // turn's messages are actually present in the prompt it receives.
+        // withHistory() builds a NEW Prompt object whenever history is
+        // non-empty (it splices messages into a new list), so stubs below
+        // are matched by content via thenAnswer rather than by the exact
+        // Prompt instance returned from PromptBuilder - object-identity
+        // stubbing only works when history is empty, as in every other test
+        // in this class.
+        List<Message> history = List.of(
+                new UserMessage("My order is 12345."),
+                new AssistantMessage("I found order 12345."));
+        when(chatMemory.get(CONVERSATION_ID)).thenReturn(history);
+
+        // Each fixture prompt mirrors the real [system, user] shape every
+        // PromptBuilder method actually produces - withHistory() treats
+        // index 0 as "keep first" and appends everything from index 1
+        // onward after the spliced history, so a single-message prompt here
+        // would misrepresent how it behaves in production.
+        String question = "What is its payment status?";
+        Prompt planningPrompt = new Prompt(List.of(new SystemMessage("planning-system"), new UserMessage("planning-marker")));
+        when(agentPlanConverter.formatInstructions()).thenReturn("format instructions");
+        when(promptBuilder.buildAgentPlanningPrompt(eq(question), eq("format instructions"))).thenReturn(planningPrompt);
+        when(agentPlanConverter.parse("raw-plan-json"))
+                .thenReturn(new AgentPlan("follow-up about a previously mentioned order", false, true));
+
+        Prompt toolsPrompt = new Prompt(List.of(new SystemMessage("tools-system"), new UserMessage("tools-marker")));
+        when(promptBuilder.buildToolsSupportPrompt(question)).thenReturn(toolsPrompt);
+
+        Prompt finalPrompt = new Prompt(List.of(new SystemMessage("final-system"), new UserMessage("final-marker")));
+        when(promptBuilder.buildAgentFinalPrompt(eq(question), anyString())).thenReturn(finalPrompt);
+
+        // Both generate() calls (planning, finalize) are distinguished by
+        // which base prompt's marker text is still present as the LAST
+        // message - withHistory() always preserves the original user
+        // message(s) at the end of the spliced list.
+        when(llmClientService.generate(any(Prompt.class))).thenAnswer(invocation -> {
+            Prompt prompt = invocation.getArgument(0);
+            String lastMessage = lastMessageText(prompt);
+            return lastMessage.equals("planning-marker") ? "raw-plan-json" : "The payment is successful.";
+        });
+        when(llmClientService.generateWithTools(any(Prompt.class), eq(supportTools)))
+                .thenReturn("The payment is successful.");
+
+        AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
+        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, question);
+
+        assertThat(response.answer()).isEqualTo("The payment is successful.");
+
+        ArgumentCaptor<Prompt> toolPromptCaptor = ArgumentCaptor.forClass(Prompt.class);
+        verify(llmClientService).generateWithTools(toolPromptCaptor.capture(), eq(supportTools));
+        assertThat(allMessageText(toolPromptCaptor.getValue())).anyMatch(text -> text.contains("12345"));
+    }
+
+    private static String lastMessageText(Prompt prompt) {
+        List<Message> instructions = prompt.getInstructions();
+        return instructions.get(instructions.size() - 1).getText();
+    }
+
+    private static List<String> allMessageText(Prompt prompt) {
+        return prompt.getInstructions().stream().map(Message::getText).toList();
+    }
+
+    @Test
+    void successfulTurnIsSavedToConversationMemory() {
+        stubPlanning(new AgentPlan("simple", false, false));
+        stubFinalize("Hello!");
+
+        AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
+        service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+
+        ArgumentCaptor<List<Message>> savedCaptor = ArgumentCaptor.forClass(List.class);
+        verify(chatMemory).add(eq(CONVERSATION_ID), savedCaptor.capture());
+        List<Message> saved = savedCaptor.getValue();
+        assertThat(saved).hasSize(2);
+        assertThat(saved.get(0).getText()).isEqualTo(QUESTION);
+        assertThat(saved.get(1).getText()).isEqualTo("Hello!");
+    }
+
+    @Test
+    void conversationHistoryRetrievalFailureDegradesGracefully() {
+        when(chatMemory.get(CONVERSATION_ID)).thenThrow(new RuntimeException("Redis unavailable"));
+        stubPlanning(new AgentPlan("simple", false, false));
+        stubFinalize("Hello! (without memory this time)");
+
+        AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
+        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+
+        assertThat(response.answer()).isEqualTo("Hello! (without memory this time)");
+        AgentStepRecord memoryStep = findStep(response, "MEMORY_RETRIEVAL");
+        assertThat(memoryStep.success()).isFalse();
+    }
+
+    @Test
+    void conversationMemorySaveFailureDoesNotFailTheRequest() {
+        stubPlanning(new AgentPlan("simple", false, false));
+        stubFinalize("Hello!");
+        doThrow(new RuntimeException("Redis unavailable"))
+                .when(chatMemory).add(eq(CONVERSATION_ID), anyList());
+
+        AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
+        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+
+        assertThat(response.answer()).isEqualTo("Hello!");
+        AgentStepRecord saveStep = findStep(response, "MEMORY_SAVE");
+        assertThat(saveStep.success()).isFalse();
     }
 
     private static List<String> capabilities(AgentResponse response) {

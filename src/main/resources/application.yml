@@ -15,6 +15,10 @@ spring:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/ai_platform}
     username: ${DB_USERNAME:ai_platform}
     password: ${DB_PASSWORD:ai_platform}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
   jpa:
     hibernate:
       ddl-auto: none
@@ -32,6 +36,9 @@ app:
   agent:
     max-iterations: ${AGENT_MAX_ITERATIONS:5}
     timeout-seconds: ${AGENT_TIMEOUT_SECONDS:30}
+  memory:
+    max-messages: ${MEMORY_MAX_MESSAGES:20}
+    ttl-hours: ${MEMORY_TTL_HOURS:24}
 
 server:
   port: ${SERVER_PORT:8080}

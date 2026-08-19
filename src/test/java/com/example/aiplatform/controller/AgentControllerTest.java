@@ -36,12 +36,13 @@ class AgentControllerTest {
                         new AgentStepRecord("BUSINESS_TOOL", true, "Tool-enabled LLM call completed", 200),
                         new AgentStepRecord("FINALIZE", true, "Final answer generated", 150)),
                 false, false, 360);
-        when(agentService.handle(eq("CUST-1001"), eq("What's the status of order ORD-1001?")))
+        when(agentService.handle(eq("CUST-1001"), eq("conv-1"), eq("What's the status of order ORD-1001?")))
                 .thenReturn(new AgentResponse("Order ORD-1001 is SHIPPED.", "gpt-4o-mini", trail));
 
         mockMvc.perform(post("/api/agent/ask")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"customerId\":\"CUST-1001\",\"message\":\"What's the status of order ORD-1001?\"}"))
+                        .content("{\"customerId\":\"CUST-1001\",\"conversationId\":\"conv-1\","
+                                + "\"message\":\"What's the status of order ORD-1001?\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.answer").value("Order ORD-1001 is SHIPPED."))
                 .andExpect(jsonPath("$.model").value("gpt-4o-mini"))
@@ -55,7 +56,15 @@ class AgentControllerTest {
     void postAskWithBlankCustomerIdReturnsBadRequest() throws Exception {
         mockMvc.perform(post("/api/agent/ask")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"customerId\":\"\",\"message\":\"hello\"}"))
+                        .content("{\"customerId\":\"\",\"conversationId\":\"conv-1\",\"message\":\"hello\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void postAskWithBlankConversationIdReturnsBadRequest() throws Exception {
+        mockMvc.perform(post("/api/agent/ask")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":\"CUST-1001\",\"conversationId\":\"\",\"message\":\"hello\"}"))
                 .andExpect(status().isBadRequest());
     }
 
@@ -63,7 +72,7 @@ class AgentControllerTest {
     void postAskWithBlankMessageReturnsBadRequest() throws Exception {
         mockMvc.perform(post("/api/agent/ask")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"customerId\":\"CUST-1001\",\"message\":\"\"}"))
+                        .content("{\"customerId\":\"CUST-1001\",\"conversationId\":\"conv-1\",\"message\":\"\"}"))
                 .andExpect(status().isBadRequest());
     }
 }
