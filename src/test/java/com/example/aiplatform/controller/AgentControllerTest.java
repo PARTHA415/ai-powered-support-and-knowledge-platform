@@ -1,0 +1,69 @@
+package com.example.aiplatform.controller;
+
+import com.example.aiplatform.model.AgentAuditTrail;
+import com.example.aiplatform.model.AgentResponse;
+import com.example.aiplatform.model.AgentStepRecord;
+import com.example.aiplatform.service.AgentService;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+
+import java.util.List;
+
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@WebMvcTest(AgentController.class)
+class AgentControllerTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @MockBean
+    private AgentService agentService;
+
+    @Test
+    void postAskReturnsAnswerAndAuditTrailFromService() throws Exception {
+        AgentAuditTrail trail = new AgentAuditTrail("req-1", "What's the status of order ORD-1001?",
+                false, true,
+                List.of(new AgentStepRecord("PLANNING", true, "needsBusinessTool=true", 10),
+                        new AgentStepRecord("BUSINESS_TOOL", true, "Tool-enabled LLM call completed", 200),
+                        new AgentStepRecord("FINALIZE", true, "Final answer generated", 150)),
+                false, false, 360);
+        when(agentService.handle(eq("CUST-1001"), eq("What's the status of order ORD-1001?")))
+                .thenReturn(new AgentResponse("Order ORD-1001 is SHIPPED.", "gpt-4o-mini", trail));
+
+        mockMvc.perform(post("/api/agent/ask")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":\"CUST-1001\",\"message\":\"What's the status of order ORD-1001?\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.answer").value("Order ORD-1001 is SHIPPED."))
+                .andExpect(jsonPath("$.model").value("gpt-4o-mini"))
+                .andExpect(jsonPath("$.auditTrail.businessToolPlanned").value(true))
+                .andExpect(jsonPath("$.auditTrail.knowledgeBasePlanned").value(false))
+                .andExpect(jsonPath("$.auditTrail.steps.length()").value(3))
+                .andExpect(jsonPath("$.auditTrail.maxIterationsExceeded").value(false));
+    }
+
+    @Test
+    void postAskWithBlankCustomerIdReturnsBadRequest() throws Exception {
+        mockMvc.perform(post("/api/agent/ask")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":\"\",\"message\":\"hello\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void postAskWithBlankMessageReturnsBadRequest() throws Exception {
+        mockMvc.perform(post("/api/agent/ask")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":\"CUST-1001\",\"message\":\"\"}"))
+                .andExpect(status().isBadRequest());
+    }
+}

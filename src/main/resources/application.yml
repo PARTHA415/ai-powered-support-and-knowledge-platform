@@ -29,6 +29,9 @@ app:
     chunk-overlap: ${RAG_CHUNK_OVERLAP:100}
     top-k: ${RAG_TOP_K:5}
     similarity-threshold: ${RAG_SIMILARITY_THRESHOLD:0.5}
+  agent:
+    max-iterations: ${AGENT_MAX_ITERATIONS:5}
+    timeout-seconds: ${AGENT_TIMEOUT_SECONDS:30}
 
 server:
   port: ${SERVER_PORT:8080}

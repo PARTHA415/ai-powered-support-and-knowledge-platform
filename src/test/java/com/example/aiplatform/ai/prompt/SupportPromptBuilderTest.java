@@ -16,7 +16,10 @@ class SupportPromptBuilderTest {
             new ClassPathResource("prompts/support-user-structured.st"),
             new ClassPathResource("prompts/rag-system.st"),
             new ClassPathResource("prompts/rag-user.st"),
-            new ClassPathResource("prompts/tools-system.st"));
+            new ClassPathResource("prompts/tools-system.st"),
+            new ClassPathResource("prompts/agent-planning-system.st"),
+            new ClassPathResource("prompts/agent-final-system.st"),
+            new ClassPathResource("prompts/agent-final-user.st"));
 
     @Test
     void buildsPromptWithSystemPersonaAndInterpolatedUserQuestion() {
@@ -85,5 +88,43 @@ class SupportPromptBuilderTest {
         Message userMessage = prompt.getInstructions().get(1);
         assertThat(userMessage.getMessageType()).isEqualTo(MessageType.USER);
         assertThat(userMessage.getText()).contains("What's the status of order ORD-1001?");
+    }
+
+    @Test
+    void buildsAgentPlanningPromptWithQuestionAndFormatInstructions() {
+        Prompt prompt = promptBuilder.buildAgentPlanningPrompt(
+                "What's the status of order ORD-1001?", "Respond only with JSON matching this schema: {...}");
+
+        assertThat(prompt.getInstructions()).hasSize(2);
+
+        Message systemMessage = prompt.getInstructions().get(0);
+        assertThat(systemMessage.getMessageType()).isEqualTo(MessageType.SYSTEM);
+        assertThat(systemMessage.getText())
+                .contains("needsKnowledgeBase")
+                .contains("needsBusinessTool");
+
+        Message userMessage = prompt.getInstructions().get(1);
+        assertThat(userMessage.getMessageType()).isEqualTo(MessageType.USER);
+        assertThat(userMessage.getText())
+                .contains("What's the status of order ORD-1001?")
+                .contains("Respond only with JSON matching this schema: {...}");
+    }
+
+    @Test
+    void buildsAgentFinalPromptWithQuestionAndEvidence() {
+        Prompt prompt = promptBuilder.buildAgentFinalPrompt(
+                "What's the status of order ORD-1001?", "Business system lookup result:\nOrder ORD-1001 is SHIPPED.");
+
+        assertThat(prompt.getInstructions()).hasSize(2);
+
+        Message systemMessage = prompt.getInstructions().get(0);
+        assertThat(systemMessage.getMessageType()).isEqualTo(MessageType.SYSTEM);
+        assertThat(systemMessage.getText()).contains("ONLY");
+
+        Message userMessage = prompt.getInstructions().get(1);
+        assertThat(userMessage.getMessageType()).isEqualTo(MessageType.USER);
+        assertThat(userMessage.getText())
+                .contains("What's the status of order ORD-1001?")
+                .contains("Order ORD-1001 is SHIPPED.");
     }
 }

@@ -23,6 +23,9 @@ public class SupportPromptBuilder implements PromptBuilder {
     private final SystemMessage ragSystemMessage;
     private final PromptTemplate ragUserPromptTemplate;
     private final SystemMessage toolsSystemMessage;
+    private final SystemMessage agentPlanningSystemMessage;
+    private final SystemMessage agentFinalSystemMessage;
+    private final PromptTemplate agentFinalUserPromptTemplate;
 
     public SupportPromptBuilder(
             @Value("classpath:/prompts/support-system.st") Resource systemPromptResource,
@@ -30,13 +33,19 @@ public class SupportPromptBuilder implements PromptBuilder {
             @Value("classpath:/prompts/support-user-structured.st") Resource structuredUserPromptResource,
             @Value("classpath:/prompts/rag-system.st") Resource ragSystemPromptResource,
             @Value("classpath:/prompts/rag-user.st") Resource ragUserPromptResource,
-            @Value("classpath:/prompts/tools-system.st") Resource toolsSystemPromptResource) {
+            @Value("classpath:/prompts/tools-system.st") Resource toolsSystemPromptResource,
+            @Value("classpath:/prompts/agent-planning-system.st") Resource agentPlanningSystemPromptResource,
+            @Value("classpath:/prompts/agent-final-system.st") Resource agentFinalSystemPromptResource,
+            @Value("classpath:/prompts/agent-final-user.st") Resource agentFinalUserPromptResource) {
         this.systemMessage = new SystemMessage(readResource(systemPromptResource));
         this.userPromptTemplate = new PromptTemplate(userPromptResource);
         this.structuredUserPromptTemplate = new PromptTemplate(structuredUserPromptResource);
         this.ragSystemMessage = new SystemMessage(readResource(ragSystemPromptResource));
         this.ragUserPromptTemplate = new PromptTemplate(ragUserPromptResource);
         this.toolsSystemMessage = new SystemMessage(readResource(toolsSystemPromptResource));
+        this.agentPlanningSystemMessage = new SystemMessage(readResource(agentPlanningSystemPromptResource));
+        this.agentFinalSystemMessage = new SystemMessage(readResource(agentFinalSystemPromptResource));
+        this.agentFinalUserPromptTemplate = new PromptTemplate(agentFinalUserPromptResource);
     }
 
     @Override
@@ -65,6 +74,22 @@ public class SupportPromptBuilder implements PromptBuilder {
     public Prompt buildRagPrompt(String question, String context) {
         Message userMessage = ragUserPromptTemplate.createMessage(Map.of("question", question, "context", context));
         return new Prompt(List.of(ragSystemMessage, userMessage));
+    }
+
+    @Override
+    public Prompt buildAgentPlanningPrompt(String question, String formatInstructions) {
+        // Reuses the same question+format template as buildStructuredSupportPrompt
+        // (support-user-structured.st) - same shape, different system persona.
+        Message userMessage = structuredUserPromptTemplate.createMessage(
+                Map.of("question", question, "format", formatInstructions));
+        return new Prompt(List.of(agentPlanningSystemMessage, userMessage));
+    }
+
+    @Override
+    public Prompt buildAgentFinalPrompt(String question, String evidence) {
+        Message userMessage = agentFinalUserPromptTemplate.createMessage(
+                Map.of("question", question, "evidence", evidence));
+        return new Prompt(List.of(agentFinalSystemMessage, userMessage));
     }
 
     private static String readResource(Resource resource) {

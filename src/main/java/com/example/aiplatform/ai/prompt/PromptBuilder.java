@@ -16,4 +16,8 @@ public interface PromptBuilder {
     Prompt buildRagPrompt(String question, String context);
 
     Prompt buildToolsSupportPrompt(String question);
+
+    Prompt buildAgentPlanningPrompt(String question, String formatInstructions);
+
+    Prompt buildAgentFinalPrompt(String question, String evidence);
 }
