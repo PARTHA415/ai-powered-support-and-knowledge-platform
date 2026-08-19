@@ -4,7 +4,6 @@ import com.example.aiplatform.ai.llm.LlmClientService;
 import com.example.aiplatform.ai.prompt.PromptBuilder;
 import com.example.aiplatform.ai.rag.SemanticSearchService;
 import com.example.aiplatform.ai.structured.AgentPlanConverter;
-import com.example.aiplatform.ai.tools.CallerContextHolder;
 import com.example.aiplatform.ai.tools.SupportTools;
 import com.example.aiplatform.config.AgentProperties;
 import com.example.aiplatform.config.RagProperties;
@@ -13,7 +12,10 @@ import com.example.aiplatform.model.AgentPlan;
 import com.example.aiplatform.model.AgentResponse;
 import com.example.aiplatform.model.AgentStepRecord;
 import com.example.aiplatform.model.SemanticSearchResult;
+import com.example.aiplatform.security.CurrentUser;
+import com.example.aiplatform.security.TestPrincipals;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -32,7 +34,6 @@ import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -71,9 +72,14 @@ class AgentServiceImplTest {
     @Mock
     private ChatMemory chatMemory;
 
+    @BeforeEach
+    void authenticateAsCustomer() {
+        TestPrincipals.authenticateAs(TestPrincipals.customer(CUSTOMER_ID));
+    }
+
     @AfterEach
-    void clearCallerContext() {
-        CallerContextHolder.clear();
+    void clearSecurityContext() {
+        TestPrincipals.clear();
     }
 
     private AgentServiceImpl newService(AgentProperties agentProperties) {
@@ -111,7 +117,7 @@ class AgentServiceImplTest {
         stubFinalize("Here's how to reset your password.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+        AgentResponse response = service.handle(CONVERSATION_ID, QUESTION);
 
         assertThat(response.answer()).isEqualTo("Here's how to reset your password.");
         assertThat(response.auditTrail().knowledgeBasePlanned()).isTrue();
@@ -129,24 +135,25 @@ class AgentServiceImplTest {
         Prompt toolsPrompt = new Prompt(new UserMessage("tools"));
         when(promptBuilder.buildToolsSupportPrompt(QUESTION)).thenReturn(toolsPrompt);
         when(llmClientService.generateWithTools(toolsPrompt, supportTools)).thenAnswer(invocation -> {
-            // The caller identity must already be set by the time a tool
-            // round can happen - this is what SupportTools' authorization
-            // checks (Phase 8) rely on.
-            assertThat(CallerContextHolder.getCurrentCustomerId()).isEqualTo(CUSTOMER_ID);
+            // The authenticated caller must already be readable by the time a
+            // tool round can happen - this is what SupportTools' authorization
+            // checks (Phase 8, now backed by real Spring Security) rely on.
+            // Unlike Phase 8-10's manually-managed CallerContextHolder, this
+            // class does nothing to set it up - Spring Security already
+            // populated the SecurityContext before handle() was ever called.
+            assertThat(CurrentUser.customerId()).isEqualTo(CUSTOMER_ID);
             return "Order ORD-1001 is SHIPPED.";
         });
         stubFinalize("Your order ORD-1001 is SHIPPED.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+        AgentResponse response = service.handle(CONVERSATION_ID, QUESTION);
 
         assertThat(response.auditTrail().knowledgeBasePlanned()).isFalse();
         assertThat(response.auditTrail().businessToolPlanned()).isTrue();
         assertThat(capabilities(response))
                 .containsExactly("MEMORY_RETRIEVAL", "PLANNING", "BUSINESS_TOOL", "FINALIZE", "MEMORY_SAVE");
         verify(semanticSearchService, never()).search(any(), any(Integer.class));
-        // Cleared after the request completes, so it can't leak into another request on a pooled thread.
-        assertThat(catchThrowable(CallerContextHolder::getCurrentCustomerId)).isInstanceOf(IllegalStateException.class);
     }
 
     // --- path: both capabilities, results combined ---
@@ -164,7 +171,7 @@ class AgentServiceImplTest {
         when(llmClientService.generate(finalPrompt)).thenReturn("Combined answer.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+        service.handle(CONVERSATION_ID, QUESTION);
 
         ArgumentCaptor<String> evidenceCaptor = ArgumentCaptor.forClass(String.class);
         verify(promptBuilder).buildAgentFinalPrompt(eq(QUESTION), evidenceCaptor.capture());
@@ -183,7 +190,7 @@ class AgentServiceImplTest {
         when(llmClientService.generate(finalPrompt)).thenReturn("Hello! How can I help?");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+        AgentResponse response = service.handle(CONVERSATION_ID, QUESTION);
 
         assertThat(capabilities(response)).containsExactly("MEMORY_RETRIEVAL", "PLANNING", "FINALIZE", "MEMORY_SAVE");
         ArgumentCaptor<String> evidenceCaptor = ArgumentCaptor.forClass(String.class);
@@ -203,7 +210,7 @@ class AgentServiceImplTest {
         stubFinalize("I can help, but couldn't determine what to look up.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+        AgentResponse response = service.handle(CONVERSATION_ID, QUESTION);
 
         assertThat(response.auditTrail().knowledgeBasePlanned()).isFalse();
         assertThat(response.auditTrail().businessToolPlanned()).isFalse();
@@ -223,7 +230,7 @@ class AgentServiceImplTest {
         stubFinalize("I couldn't search the knowledge base right now.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+        AgentResponse response = service.handle(CONVERSATION_ID, QUESTION);
 
         assertThat(response.answer()).isEqualTo("I couldn't search the knowledge base right now.");
         AgentStepRecord kbStep = findStep(response, "KNOWLEDGE_BASE");
@@ -245,7 +252,7 @@ class AgentServiceImplTest {
         stubFinalize("I couldn't look up that order right now.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+        AgentResponse response = service.handle(CONVERSATION_ID, QUESTION);
 
         assertThat(response.answer()).isEqualTo("I couldn't look up that order right now.");
         AgentStepRecord toolStep = findStep(response, "BUSINESS_TOOL");
@@ -262,7 +269,7 @@ class AgentServiceImplTest {
         stubFinalize("Partial answer.");
 
         AgentServiceImpl service = newService(new AgentProperties(1, 30));
-        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+        AgentResponse response = service.handle(CONVERSATION_ID, QUESTION);
 
         assertThat(response.auditTrail().maxIterationsExceeded()).isTrue();
         assertThat(capabilities(response))
@@ -281,7 +288,7 @@ class AgentServiceImplTest {
         // so the very first capability-loop check trips the timeout - a
         // deterministic way to exercise this path without sleeps.
         AgentServiceImpl service = newService(new AgentProperties(5, 0.0));
-        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+        AgentResponse response = service.handle(CONVERSATION_ID, QUESTION);
 
         assertThat(response.auditTrail().timedOut()).isTrue();
         assertThat(capabilities(response)).containsExactly("MEMORY_RETRIEVAL", "PLANNING", "FINALIZE", "MEMORY_SAVE");
@@ -301,7 +308,7 @@ class AgentServiceImplTest {
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
 
-        assertThatThrownBy(() -> service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION))
+        assertThatThrownBy(() -> service.handle(CONVERSATION_ID, QUESTION))
                 .isInstanceOf(LlmIntegrationException.class);
     }
 
@@ -356,7 +363,7 @@ class AgentServiceImplTest {
                 .thenReturn("The payment is successful.");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, question);
+        AgentResponse response = service.handle(CONVERSATION_ID, question);
 
         assertThat(response.answer()).isEqualTo("The payment is successful.");
 
@@ -380,7 +387,7 @@ class AgentServiceImplTest {
         stubFinalize("Hello!");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+        service.handle(CONVERSATION_ID, QUESTION);
 
         ArgumentCaptor<List<Message>> savedCaptor = ArgumentCaptor.forClass(List.class);
         verify(chatMemory).add(eq(CONVERSATION_ID), savedCaptor.capture());
@@ -397,7 +404,7 @@ class AgentServiceImplTest {
         stubFinalize("Hello! (without memory this time)");
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+        AgentResponse response = service.handle(CONVERSATION_ID, QUESTION);
 
         assertThat(response.answer()).isEqualTo("Hello! (without memory this time)");
         AgentStepRecord memoryStep = findStep(response, "MEMORY_RETRIEVAL");
@@ -412,7 +419,7 @@ class AgentServiceImplTest {
                 .when(chatMemory).add(eq(CONVERSATION_ID), anyList());
 
         AgentServiceImpl service = newService(DEFAULT_AGENT_PROPERTIES);
-        AgentResponse response = service.handle(CUSTOMER_ID, CONVERSATION_ID, QUESTION);
+        AgentResponse response = service.handle(CONVERSATION_ID, QUESTION);
 
         assertThat(response.answer()).isEqualTo("Hello!");
         AgentStepRecord saveStep = findStep(response, "MEMORY_SAVE");

@@ -4,7 +4,6 @@ import com.example.aiplatform.ai.llm.LlmClientService;
 import com.example.aiplatform.ai.prompt.PromptBuilder;
 import com.example.aiplatform.ai.rag.SemanticSearchService;
 import com.example.aiplatform.ai.structured.AgentPlanConverter;
-import com.example.aiplatform.ai.tools.CallerContextHolder;
 import com.example.aiplatform.ai.tools.SupportTools;
 import com.example.aiplatform.config.AgentProperties;
 import com.example.aiplatform.config.RagProperties;
@@ -28,12 +27,22 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * The Phase 9 agent workflow, extended in Phase 10 with conversation memory:
- * understand the request (plan), decide whether knowledge retrieval and/or a
- * business tool are required (also the plan), call whichever capabilities
- * were planned (bounded, never a loop that can run away), combine what came
- * back, and produce one final grounded answer - all informed by prior turns
- * of the same conversation, explicitly identified by conversationId.
+ * The Phase 9 agent workflow, extended in Phase 10 with conversation memory
+ * and Phase 11 with real authorization: understand the request (plan),
+ * decide whether knowledge retrieval and/or a business tool are required
+ * (also the plan), call whichever capabilities were planned (bounded, never
+ * a loop that can run away), combine what came back, and produce one final
+ * grounded answer - all informed by prior turns of the same conversation,
+ * explicitly identified by conversationId.
+ *
+ * Notably absent as of Phase 11: no customerId parameter, and no manual
+ * caller-context setup around the capability loop. Spring Security already
+ * populates the authenticated principal in the SecurityContext for the
+ * whole request before this method even runs; SupportTools reads it
+ * directly via {@link com.example.aiplatform.security.CurrentUser} whenever
+ * it needs to authorize a lookup. There is nothing left for this class to
+ * wire manually - which is exactly what Phases 8-10 predicted Phase 11
+ * would replace.
  *
  * Deliberately lives in {@code service}, not a new {@code ai/agent} package -
  * see the Phase 9 docs for why.
@@ -81,7 +90,7 @@ public class AgentServiceImpl implements AgentService {
     }
 
     @Override
-    public AgentResponse handle(String customerId, String conversationId, String question) {
+    public AgentResponse handle(String conversationId, String question) {
         long startNanos = System.nanoTime();
         String requestId = UUID.randomUUID().toString();
         List<AgentStepRecord> steps = new ArrayList<>();
@@ -101,31 +110,26 @@ public class AgentServiceImpl implements AgentService {
         boolean maxIterationsExceeded = false;
         boolean timedOut = false;
 
-        CallerContextHolder.setCurrentCustomerId(customerId);
-        try {
-            int iteration = 0;
-            for (String capability : plannedCapabilities) {
-                iteration++;
-                if (iteration > agentProperties.maxIterations()) {
-                    maxIterationsExceeded = true;
-                    log.warn("Agent request {}: hit max iterations ({}) - stopping with partial evidence",
-                            requestId, agentProperties.maxIterations());
-                    break;
-                }
-                if (elapsedSeconds(startNanos) > agentProperties.timeoutSeconds()) {
-                    timedOut = true;
-                    log.warn("Agent request {}: exceeded timeout ({}s) - stopping with partial evidence",
-                            requestId, agentProperties.timeoutSeconds());
-                    break;
-                }
-                if (capability.equals(CAPABILITY_KNOWLEDGE_BASE)) {
-                    executeKnowledgeBaseStep(question, evidenceBlocks, steps, requestId);
-                } else {
-                    executeBusinessToolStep(question, history, evidenceBlocks, steps, requestId);
-                }
+        int iteration = 0;
+        for (String capability : plannedCapabilities) {
+            iteration++;
+            if (iteration > agentProperties.maxIterations()) {
+                maxIterationsExceeded = true;
+                log.warn("Agent request {}: hit max iterations ({}) - stopping with partial evidence",
+                        requestId, agentProperties.maxIterations());
+                break;
             }
-        } finally {
-            CallerContextHolder.clear();
+            if (elapsedSeconds(startNanos) > agentProperties.timeoutSeconds()) {
+                timedOut = true;
+                log.warn("Agent request {}: exceeded timeout ({}s) - stopping with partial evidence",
+                        requestId, agentProperties.timeoutSeconds());
+                break;
+            }
+            if (capability.equals(CAPABILITY_KNOWLEDGE_BASE)) {
+                executeKnowledgeBaseStep(question, evidenceBlocks, steps, requestId);
+            } else {
+                executeBusinessToolStep(question, history, evidenceBlocks, steps, requestId);
+            }
         }
 
         String answer = finalizeAnswer(question, history, evidenceBlocks, steps, requestId);

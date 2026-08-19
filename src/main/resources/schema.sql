@@ -21,3 +21,25 @@ CREATE TABLE IF NOT EXISTS document_chunk (
 CREATE INDEX IF NOT EXISTS document_chunk_embedding_idx
     ON document_chunk
     USING hnsw (embedding vector_cosine_ops);
+
+-- customer_id is only meaningful for USER-role accounts (a customer looking
+-- up their own data); staff accounts (SUPPORT_AGENT, ADMIN) leave it NULL,
+-- since tool-level authorization never checks ownership for staff roles.
+CREATE TABLE IF NOT EXISTS app_user (
+    id BIGSERIAL PRIMARY KEY,
+    username VARCHAR(100) NOT NULL UNIQUE,
+    password_hash VARCHAR(200) NOT NULL,
+    customer_id VARCHAR(50),
+    role VARCHAR(30) NOT NULL
+);
+
+-- Demo accounts, all with password "password" (BCrypt-hashed below) - see
+-- the Phase 11 docs for the full list and what each is for. alice/bob match
+-- the CUST-1001/CUST-1002 fixture customers from Phase 8's BusinessDataStore,
+-- so tool-level ownership checks have real matching data to authorize against.
+INSERT INTO app_user (username, password_hash, customer_id, role) VALUES
+    ('alice', '$2a$10$D0N.Q5yAWsveP9/MVqc2O.p7t99qpulLWI7VFgT1/HtACJR6wJcWC', 'CUST-1001', 'USER'),
+    ('bob',   '$2a$10$D0N.Q5yAWsveP9/MVqc2O.p7t99qpulLWI7VFgT1/HtACJR6wJcWC', 'CUST-1002', 'USER'),
+    ('carol', '$2a$10$D0N.Q5yAWsveP9/MVqc2O.p7t99qpulLWI7VFgT1/HtACJR6wJcWC', NULL, 'SUPPORT_AGENT'),
+    ('dave',  '$2a$10$D0N.Q5yAWsveP9/MVqc2O.p7t99qpulLWI7VFgT1/HtACJR6wJcWC', NULL, 'ADMIN')
+ON CONFLICT (username) DO NOTHING;

@@ -1,5 +1,6 @@
 package com.example.aiplatform.controller;
 
+import com.example.aiplatform.config.SecurityConfig;
 import com.example.aiplatform.model.AskResponse;
 import com.example.aiplatform.model.SemanticSearchResult;
 import com.example.aiplatform.service.QuestionAnsweringService;
@@ -7,7 +8,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
@@ -19,6 +22,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(QuestionAnsweringController.class)
+@Import(SecurityConfig.class)
 class QuestionAnsweringControllerTest {
 
     @Autowired
@@ -28,6 +32,7 @@ class QuestionAnsweringControllerTest {
     private QuestionAnsweringService questionAnsweringService;
 
     @Test
+    @WithMockUser(roles = "USER")
     void postQaReturnsAnswerWithSourcesFromService() throws Exception {
         when(questionAnsweringService.answer(eq("How do I reset my password?")))
                 .thenReturn(new AskResponse(
@@ -47,6 +52,15 @@ class QuestionAnsweringControllerTest {
     }
 
     @Test
+    void postQaWithoutAuthenticationIsRejected() throws Exception {
+        mockMvc.perform(post("/api/qa")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"question\":\"How do I reset my password?\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @WithMockUser(roles = "USER")
     void postQaWithBlankQuestionReturnsBadRequest() throws Exception {
         mockMvc.perform(post("/api/qa")
                         .contentType(MediaType.APPLICATION_JSON)

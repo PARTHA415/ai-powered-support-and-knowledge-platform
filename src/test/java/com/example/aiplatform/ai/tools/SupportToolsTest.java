@@ -1,5 +1,7 @@
 package com.example.aiplatform.ai.tools;
 
+import com.example.aiplatform.model.Role;
+import com.example.aiplatform.security.TestPrincipals;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
@@ -26,6 +28,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * something this test suite controls or asserts on - what's verified here is
  * that the tools are correctly registered and described (so an LLM *can*
  * select correctly) and that execution is correct once a tool is selected.
+ *
+ * As of Phase 11, the caller identity comes from a fake Spring Security
+ * SecurityContext ({@link TestPrincipals}) rather than a manually-set
+ * ThreadLocal - the same mechanism the real application uses after HTTP
+ * Basic authentication succeeds.
  */
 class SupportToolsTest {
 
@@ -39,8 +46,8 @@ class SupportToolsTest {
             .getToolCallbacks();
 
     @AfterEach
-    void clearCallerContext() {
-        CallerContextHolder.clear();
+    void clearSecurityContext() {
+        TestPrincipals.clear();
     }
 
     // --- tool registration / schema correctness (what makes correct LLM selection possible) ---
@@ -71,7 +78,7 @@ class SupportToolsTest {
 
     @Test
     void getOrderReturnsOrderForOwningCaller() throws Exception {
-        CallerContextHolder.setCurrentCustomerId("CUST-1001");
+        TestPrincipals.authenticateAs(TestPrincipals.customer("CUST-1001"));
 
         JsonNode result = callTool("getOrder", "{\"orderId\":\"ORD-1001\"}");
 
@@ -81,7 +88,7 @@ class SupportToolsTest {
 
     @Test
     void checkInventoryWorksWithoutAnyCallerContext() throws Exception {
-        // No CallerContextHolder set at all - inventory isn't customer-scoped.
+        // No authentication set up at all - inventory isn't customer-scoped.
         JsonNode result = callTool("checkInventory", "{\"productId\":\"PROD-2001\"}");
 
         assertThat(result.get("quantityAvailable").asInt()).isEqualTo(42);
@@ -92,7 +99,7 @@ class SupportToolsTest {
 
     @Test
     void getOrderWithMalformedOrderIdIsRejected() {
-        CallerContextHolder.setCurrentCustomerId("CUST-1001");
+        TestPrincipals.authenticateAs(TestPrincipals.customer("CUST-1001"));
         ToolCallback getOrder = findTool("getOrder");
 
         assertThatThrownBy(() -> getOrder.call("{\"orderId\":\"not-an-order-id\"}"))
@@ -115,7 +122,7 @@ class SupportToolsTest {
 
     @Test
     void getOrderWithNonexistentOrderIdFails() {
-        CallerContextHolder.setCurrentCustomerId("CUST-1001");
+        TestPrincipals.authenticateAs(TestPrincipals.customer("CUST-1001"));
         ToolCallback getOrder = findTool("getOrder");
 
         assertThatThrownBy(() -> getOrder.call("{\"orderId\":\"ORD-9999\"}"))
@@ -128,7 +135,7 @@ class SupportToolsTest {
     void getShipmentStatusForOrderWithNoShipmentYetFails() {
         // ORD-1002 exists and belongs to CUST-1002, but has no shipment record
         // in the fixture data - a "not found" one level deeper than the order itself.
-        CallerContextHolder.setCurrentCustomerId("CUST-1002");
+        TestPrincipals.authenticateAs(TestPrincipals.customer("CUST-1002"));
         ToolCallback getShipmentStatus = findTool("getShipmentStatus");
 
         assertThatThrownBy(() -> getShipmentStatus.call("{\"orderId\":\"ORD-1002\"}"))
@@ -137,13 +144,24 @@ class SupportToolsTest {
                 .isInstanceOf(com.example.aiplatform.exception.ToolResourceNotFoundException.class);
     }
 
-    // --- unauthorized tool access ---
+    // --- unauthorized tool access: the required demonstration ---
+    //
+    // In every case below, the ToolCallback is invoked exactly the way Spring
+    // AI invokes it when a real LLM decides to call this tool with these
+    // arguments - the LLM's "request" is fully honored at the protocol level
+    // (valid tool name, valid JSON arguments, the method genuinely runs).
+    // What blocks it is entirely inside requireOwnedByCaller: a Java
+    // comparison between the authenticated caller's identity (read from
+    // Spring Security's SecurityContext, never from the tool call's own
+    // arguments) and the resource's actual owner. The LLM is never asked
+    // "is this allowed" and has no path to influence the answer.
 
     @Test
     void getOrderForAnotherCustomersOrderIsUnauthorized() {
         // ORD-1001 belongs to CUST-1001; CUST-1002 must not be able to read it,
-        // even though the tool call itself is well-formed and the order exists.
-        CallerContextHolder.setCurrentCustomerId("CUST-1002");
+        // even though the tool call itself is well-formed and the order exists -
+        // i.e. even though the LLM's request was entirely legitimate-looking.
+        TestPrincipals.authenticateAs(TestPrincipals.customer("CUST-1002"));
         ToolCallback getOrder = findTool("getOrder");
 
         assertThatThrownBy(() -> getOrder.call("{\"orderId\":\"ORD-1001\"}"))
@@ -154,13 +172,33 @@ class SupportToolsTest {
 
     @Test
     void getCustomerForAnotherCustomersProfileIsUnauthorized() {
-        CallerContextHolder.setCurrentCustomerId("CUST-1002");
+        TestPrincipals.authenticateAs(TestPrincipals.customer("CUST-1002"));
         ToolCallback getCustomer = findTool("getCustomer");
 
         assertThatThrownBy(() -> getCustomer.call("{\"customerId\":\"CUST-1001\"}"))
                 .isInstanceOf(ToolExecutionException.class)
                 .cause()
                 .isInstanceOf(com.example.aiplatform.exception.UnauthorizedToolAccessException.class);
+    }
+
+    // --- RBAC: staff roles can act on behalf of any customer ---
+
+    @Test
+    void supportAgentCanAccessAnyCustomersOrder() throws Exception {
+        TestPrincipals.authenticateAs(TestPrincipals.staff(Role.SUPPORT_AGENT));
+
+        JsonNode result = callTool("getOrder", "{\"orderId\":\"ORD-1001\"}");
+
+        assertThat(result.get("orderId").asText()).isEqualTo("ORD-1001");
+    }
+
+    @Test
+    void adminCanAccessAnyCustomersProfile() throws Exception {
+        TestPrincipals.authenticateAs(TestPrincipals.staff(Role.ADMIN));
+
+        JsonNode result = callTool("getCustomer", "{\"customerId\":\"CUST-1002\"}");
+
+        assertThat(result.get("customerId").asText()).isEqualTo("CUST-1002");
     }
 
     private ToolCallback findTool(String name) {

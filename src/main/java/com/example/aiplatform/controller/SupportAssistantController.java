@@ -25,6 +25,6 @@ public class SupportAssistantController {
             + "customer/inventory tools as needed")
     @PostMapping("/assist")
     public ResponseEntity<ChatResponse> assist(@Valid @RequestBody SupportAssistantRequest request) {
-        return ResponseEntity.ok(supportAssistantService.assist(request.customerId(), request.message()));
+        return ResponseEntity.ok(supportAssistantService.assist(request.message()));
     }
 }

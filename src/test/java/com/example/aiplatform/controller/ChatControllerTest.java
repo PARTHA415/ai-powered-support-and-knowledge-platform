@@ -1,5 +1,6 @@
 package com.example.aiplatform.controller;
 
+import com.example.aiplatform.config.SecurityConfig;
 import com.example.aiplatform.exception.LlmIntegrationException;
 import com.example.aiplatform.model.ChatResponse;
 import com.example.aiplatform.model.ConfidenceLevel;
@@ -10,7 +11,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.mockito.ArgumentMatchers.eq;
@@ -20,6 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(ChatController.class)
+@Import(SecurityConfig.class)
 class ChatControllerTest {
 
     @Autowired
@@ -29,6 +33,7 @@ class ChatControllerTest {
     private ChatService chatService;
 
     @Test
+    @WithMockUser(roles = "USER")
     void postChatReturnsAnswerFromService() throws Exception {
         when(chatService.answer(eq("What is pgvector?")))
                 .thenReturn(new ChatResponse("pgvector is a Postgres extension for vector similarity search.", "gpt-4o-mini"));
@@ -42,6 +47,15 @@ class ChatControllerTest {
     }
 
     @Test
+    void postChatWithoutAuthenticationIsRejected() throws Exception {
+        mockMvc.perform(post("/api/chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"message\":\"What is pgvector?\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @WithMockUser(roles = "USER")
     void postChatWithBlankMessageReturnsBadRequest() throws Exception {
         mockMvc.perform(post("/api/chat")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -50,6 +64,7 @@ class ChatControllerTest {
     }
 
     @Test
+    @WithMockUser(roles = "USER")
     void postStructuredChatReturnsParsedAnswerFromService() throws Exception {
         when(chatService.answerStructured(eq("How do I reset my password?")))
                 .thenReturn(new SupportAnswer(
@@ -69,6 +84,7 @@ class ChatControllerTest {
     }
 
     @Test
+    @WithMockUser(roles = "USER")
     void postStructuredChatReturnsBadGatewayWhenModelResponseIsUnparseable() throws Exception {
         when(chatService.answerStructured(eq("What is pgvector?")))
                 .thenThrow(new LlmIntegrationException(

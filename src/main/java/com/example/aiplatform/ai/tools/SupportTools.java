@@ -7,7 +7,9 @@ import com.example.aiplatform.model.Customer;
 import com.example.aiplatform.model.InventoryStatus;
 import com.example.aiplatform.model.Order;
 import com.example.aiplatform.model.PaymentStatus;
+import com.example.aiplatform.model.Role;
 import com.example.aiplatform.model.ShipmentStatus;
+import com.example.aiplatform.security.CurrentUser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
@@ -26,8 +28,14 @@ import java.util.regex.Pattern;
  * "the LLM must never directly access the database" means in practice.
  *
  * Every order/payment/shipment-scoped lookup is additionally gated by
- * {@link CallerContextHolder} - the LLM choosing to ask for a given order ID
- * does not by itself authorize access to it.
+ * {@link CurrentUser}, which reads the REAL authenticated caller from Spring
+ * Security's SecurityContext (Phase 11) - not an identity the LLM could
+ * influence, and not anything the tool's own JSON arguments carry. The LLM
+ * choosing to ask for a given order ID does not by itself authorize access
+ * to it: a USER-role caller may only access their own customerId's data;
+ * SUPPORT_AGENT and ADMIN callers - real staff, verified by authentication,
+ * never by anything the model claims - may access any customer's data, the
+ * same way a real support agent legitimately can when helping a customer.
  */
 @Component
 public class SupportTools {
@@ -125,7 +133,14 @@ public class SupportTools {
     }
 
     private static void requireOwnedByCaller(String ownerCustomerId, String resourceDescription) {
-        String callerCustomerId = CallerContextHolder.getCurrentCustomerId();
+        Role callerRole = CurrentUser.role();
+        if (callerRole == Role.SUPPORT_AGENT || callerRole == Role.ADMIN) {
+            // Staff can act on behalf of any customer - this is a role check,
+            // not a bypass: it still requires a real, authenticated staff
+            // account, verified by Spring Security, never by the LLM.
+            return;
+        }
+        String callerCustomerId = CurrentUser.customerId();
         if (!callerCustomerId.equals(ownerCustomerId)) {
             throw new UnauthorizedToolAccessException(
                     "Caller " + callerCustomerId + " is not authorized to access " + resourceDescription);

@@ -25,6 +25,6 @@ public class AgentController {
             + "business tool are needed, calls them, and combines the results into one grounded answer")
     @PostMapping("/ask")
     public ResponseEntity<AgentResponse> ask(@Valid @RequestBody AgentRequest request) {
-        return ResponseEntity.ok(agentService.handle(request.customerId(), request.conversationId(), request.message()));
+        return ResponseEntity.ok(agentService.handle(request.conversationId(), request.message()));
     }
 }

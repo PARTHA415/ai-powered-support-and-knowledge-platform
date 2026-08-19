@@ -3,6 +3,9 @@ package com.example.aiplatform.service;
 import com.example.aiplatform.ai.embedding.EmbeddingService;
 import com.example.aiplatform.ai.llm.LlmClientService;
 import com.example.aiplatform.model.AgentResponse;
+import com.example.aiplatform.security.TestPrincipals;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.messages.Message;
@@ -65,9 +68,18 @@ class AgentConversationIntegrationTest {
     @MockBean
     private LlmClientService llmClientService;
 
+    @BeforeEach
+    void authenticateAsCustomer() {
+        TestPrincipals.authenticateAs(TestPrincipals.customer("CUST-1001"));
+    }
+
+    @AfterEach
+    void clearSecurityContext() {
+        TestPrincipals.clear();
+    }
+
     @Test
     void secondTurnResolvesItsFromFirstTurnsHistoryViaRealRedis() {
-        String customerId = "CUST-1001";
         String conversationId = "conv-multi-turn-" + System.nanoTime();
 
         // Both turns skip capability calls entirely (plan: no KB, no tool) -
@@ -89,10 +101,10 @@ class AgentConversationIntegrationTest {
             return "I found order 12345.";
         });
 
-        AgentResponse turnOne = agentService.handle(customerId, conversationId, "My order is 12345.");
+        AgentResponse turnOne = agentService.handle(conversationId, "My order is 12345.");
         assertThat(turnOne.answer()).isEqualTo("I found order 12345.");
 
-        AgentResponse turnTwo = agentService.handle(customerId, conversationId, "What is its payment status?");
+        AgentResponse turnTwo = agentService.handle(conversationId, "What is its payment status?");
         assertThat(turnTwo.answer()).isEqualTo("The payment is successful.");
 
         // The decisive assertion: turn two's FINALIZE call (identifiable by

@@ -4,5 +4,5 @@ import com.example.aiplatform.model.ChatResponse;
 
 public interface SupportAssistantService {
 
-    ChatResponse assist(String customerId, String message);
+    ChatResponse assist(String message);
 }

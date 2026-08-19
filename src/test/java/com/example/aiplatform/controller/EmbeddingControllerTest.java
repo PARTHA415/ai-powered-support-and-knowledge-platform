@@ -1,11 +1,14 @@
 package com.example.aiplatform.controller;
 
 import com.example.aiplatform.ai.embedding.EmbeddingService;
+import com.example.aiplatform.config.SecurityConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.mockito.ArgumentMatchers.eq;
@@ -14,7 +17,12 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+/**
+ * Raw embedding generation is an internal/debug endpoint from Phase 4, not
+ * customer-facing - ADMIN only, per SecurityConfig.
+ */
 @WebMvcTest(EmbeddingController.class)
+@Import(SecurityConfig.class)
 class EmbeddingControllerTest {
 
     @Autowired
@@ -24,6 +32,7 @@ class EmbeddingControllerTest {
     private EmbeddingService embeddingService;
 
     @Test
+    @WithMockUser(roles = "ADMIN")
     void postEmbeddingsReturnsVectorAndMetadata() throws Exception {
         when(embeddingService.embed(eq("Kafka consumer lag")))
                 .thenReturn(new float[] {0.1f, 0.2f, 0.3f});
@@ -39,6 +48,33 @@ class EmbeddingControllerTest {
     }
 
     @Test
+    @WithMockUser(roles = "USER")
+    void postEmbeddingsAsPlainUserIsForbidden() throws Exception {
+        mockMvc.perform(post("/api/embeddings")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"text\":\"Kafka consumer lag\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithMockUser(roles = "SUPPORT_AGENT")
+    void postEmbeddingsAsSupportAgentIsForbidden() throws Exception {
+        mockMvc.perform(post("/api/embeddings")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"text\":\"Kafka consumer lag\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void postEmbeddingsWithoutAuthenticationIsRejected() throws Exception {
+        mockMvc.perform(post("/api/embeddings")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"text\":\"Kafka consumer lag\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
     void postEmbeddingsWithBlankTextReturnsBadRequest() throws Exception {
         mockMvc.perform(post("/api/embeddings")
                         .contentType(MediaType.APPLICATION_JSON)
