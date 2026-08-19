@@ -1,0 +1,27 @@
+[
+  {
+    "title": "Password Reset Guide",
+    "source": "kb/password-reset.md",
+    "content": "To reset your password, open Settings, go to Security, and select Reset Password. You will receive a confirmation email with a link to set a new password."
+  },
+  {
+    "title": "Kafka Consumer Troubleshooting",
+    "source": "kb/kafka-consumer.md",
+    "content": "If your Kafka consumer is falling behind or failing, check consumer lag first. Restart the consumer group to clear a stuck offset, and verify the broker connection is healthy."
+  },
+  {
+    "title": "Shipment Tracking Guide",
+    "source": "kb/shipment-tracking.md",
+    "content": "To track your shipment, open your order and select Track Package. The tracking page shows the current carrier status and estimated delivery date for your order."
+  },
+  {
+    "title": "Billing and Payment FAQ",
+    "source": "kb/billing-payment.md",
+    "content": "We accept credit card and PayPal payments. Invoices are emailed after each order and can also be downloaded from your account billing page."
+  },
+  {
+    "title": "Inventory Check Procedure",
+    "source": "kb/inventory-check.md",
+    "content": "To check inventory for an order item, open the product page and select Check Stock. Stock levels update once per hour, so a recently placed order may briefly still show as available."
+  }
+]
