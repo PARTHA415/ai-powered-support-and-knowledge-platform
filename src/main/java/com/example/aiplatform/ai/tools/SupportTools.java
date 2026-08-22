@@ -14,6 +14,7 @@ import com.example.aiplatform.model.PaymentStatus;
 import com.example.aiplatform.model.Role;
 import com.example.aiplatform.model.SemanticSearchResult;
 import com.example.aiplatform.model.ShipmentStatus;
+import com.example.aiplatform.security.AuditLogger;
 import com.example.aiplatform.security.CurrentUser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -192,12 +193,15 @@ public class SupportTools {
             // Staff can act on behalf of any customer - this is a role check,
             // not a bypass: it still requires a real, authenticated staff
             // account, verified by Spring Security, never by the LLM.
+            AuditLogger.logToolAccess(resourceDescription, true, "staff:" + callerRole);
             return;
         }
         String callerCustomerId = CurrentUser.customerId();
         if (!callerCustomerId.equals(ownerCustomerId)) {
+            AuditLogger.logToolAccess(resourceDescription, false, callerCustomerId);
             throw new UnauthorizedToolAccessException(
                     "Caller " + callerCustomerId + " is not authorized to access " + resourceDescription);
         }
+        AuditLogger.logToolAccess(resourceDescription, true, callerCustomerId);
     }
 }

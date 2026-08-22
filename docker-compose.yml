@@ -1,4 +1,35 @@
 services:
+  # Phase 16: the application itself, containerized - opt-in via
+  # `docker compose --profile full up --build`, deliberately NOT started by
+  # a plain `docker compose up` (every earlier phase's docs assume that
+  # command brings up just the infra services, then `mvn spring-boot:run`
+  # runs the app on the host - changing that default would break every one
+  # of those instructions). Both ways of running the app work side by side.
+  app:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-ai_platform}
+      DB_USERNAME: ${POSTGRES_USER:-ai_platform}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-ai_platform}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Required, no default (see application.yml) - must be set in the
+      # shell environment or a .env file next to this compose file; never
+      # committed, never baked into the image (Phase 16's secrets-management
+      # review - see the docs for the AWS Secrets Manager equivalent).
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   postgres:
     image: pgvector/pgvector:pg16
     environment:

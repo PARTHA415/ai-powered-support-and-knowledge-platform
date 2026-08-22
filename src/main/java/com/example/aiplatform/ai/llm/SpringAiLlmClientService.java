@@ -5,6 +5,7 @@ import com.example.aiplatform.config.GuardrailProperties;
 import com.example.aiplatform.exception.LlmIntegrationException;
 import com.example.aiplatform.exception.PromptTooLargeException;
 import com.example.aiplatform.observability.AiPipelineMetrics;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -22,7 +23,13 @@ import org.springframework.stereotype.Service;
  * feature triggered it: a hard prompt-size ceiling before the call, and
  * sensitive-data/system-prompt-leak scrubbing on the response after it - the
  * same "enforced once, inherited everywhere" property Phase 11 already
- * established for tool authorization.
+ * established for tool authorization - and, as of Phase 16, the same single
+ * point where a circuit breaker (the {@code llm} instance, configured in
+ * application.yml) protects every caller from a sustained provider outage:
+ * each method's existing catch-and-wrap into {@link LlmIntegrationException}
+ * already propagates a real exception out of the method on failure, which is
+ * all Resilience4j's aspect needs to count it - no restructuring required,
+ * only the annotation and a fallback method per overload.
  */
 @Service
 public class SpringAiLlmClientService implements LlmClientService {
@@ -48,6 +55,7 @@ public class SpringAiLlmClientService implements LlmClientService {
     }
 
     @Override
+    @CircuitBreaker(name = "llm", fallbackMethod = "generateFallback")
     public String generate(Prompt prompt) {
         assertWithinTokenBudget(prompt);
         log.debug("Sending prompt to LLM ({} messages)", prompt.getInstructions().size());
@@ -64,6 +72,7 @@ public class SpringAiLlmClientService implements LlmClientService {
     }
 
     @Override
+    @CircuitBreaker(name = "llm", fallbackMethod = "generateWithToolsFallback")
     public String generateWithTools(Prompt prompt, Object... tools) {
         assertWithinTokenBudget(prompt);
         log.debug("Sending prompt to LLM with {} tool object(s) ({} messages)",
@@ -82,6 +91,7 @@ public class SpringAiLlmClientService implements LlmClientService {
     }
 
     @Override
+    @CircuitBreaker(name = "llm", fallbackMethod = "generateWithToolCallbackProviderFallback")
     public String generateWithTools(Prompt prompt, ToolCallbackProvider toolCallbackProvider) {
         assertWithinTokenBudget(prompt);
         log.debug("Sending prompt to LLM with a tool callback provider ({} messages)",
@@ -97,6 +107,39 @@ public class SpringAiLlmClientService implements LlmClientService {
             log.error("LLM call with tool callback provider failed", e);
             throw new LlmIntegrationException("Failed to get a response from the LLM", e);
         }
+    }
+
+    /**
+     * Invoked instead of the method body once the {@code llm} circuit
+     * breaker is OPEN (sustained failures already observed - see
+     * application.yml) - fails fast with a clear, honest message rather
+     * than letting every request queue up behind a provider that's already
+     * down. {@code PromptTooLargeException} from {@code assertWithinTokenBudget}
+     * is thrown from inside this same annotated method, so without
+     * application.yml's {@code ignore-exceptions} entry for it, a caller
+     * repeatedly sending oversized prompts would trip the SAME breaker a
+     * real provider outage does - a guardrail rejection has nothing to do
+     * with whether the LLM provider is healthy, and must not be allowed to
+     * count against it.
+     */
+    private String generateFallback(Prompt prompt, Throwable cause) {
+        return circuitOpenFallback(cause);
+    }
+
+    private String generateWithToolsFallback(Prompt prompt, Object[] tools, Throwable cause) {
+        return circuitOpenFallback(cause);
+    }
+
+    private String generateWithToolCallbackProviderFallback(Prompt prompt, ToolCallbackProvider toolCallbackProvider,
+                                                              Throwable cause) {
+        return circuitOpenFallback(cause);
+    }
+
+    private String circuitOpenFallback(Throwable cause) {
+        log.error("LLM circuit breaker fallback triggered - the provider appears to be down", cause);
+        throw new LlmIntegrationException(
+                "The AI service is temporarily unavailable and is being given time to recover "
+                        + "(circuit breaker open) - please try again shortly.", cause);
     }
 
     /**

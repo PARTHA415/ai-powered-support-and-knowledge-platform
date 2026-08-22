@@ -1,0 +1,10 @@
+target/
+.idea/
+*.iml
+.git/
+.gitignore
+CLAUDE.local.md
+.env
+*.log
+docs/
+observability/

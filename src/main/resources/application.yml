@@ -11,6 +11,19 @@ spring:
       embedding:
         options:
           model: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
+    retry:
+      # Phase 16: Spring AI already wraps every OpenAI call in a RetryTemplate
+      # (spring-ai-retry, on the classpath transitively) - this tunes its
+      # defaults (10 attempts, 2s initial backoff, 5x multiplier - which could
+      # keep a single synchronous HTTP request retrying for several MINUTES
+      # before giving up) down to a bounded worst case appropriate for a
+      # request/response API: at most ~7.5s of retrying (500ms + 1s + 2s + 4s)
+      # before the circuit breaker below or the caller gives up instead.
+      max-attempts: 4
+      backoff:
+        initial-interval: 500ms
+        multiplier: 2
+        max-interval: 4000ms
     chat:
       observations:
         # Never log prompt/completion content - these are potentially
@@ -31,6 +44,25 @@ spring:
           knowledge-base lookup tools. Every tool call is authenticated and
           authorized exactly like the equivalent REST endpoint - MCP is a new
           transport for these capabilities, not a new trust boundary.
+  http:
+    client:
+      # Global connect/read timeout applied to Spring Boot's auto-configured
+      # RestClient/WebClient builders - including the one Spring AI's OpenAI
+      # integration uses. Without this, a hung connection to the LLM provider
+      # has no upper bound at all short of the OS-level TCP timeout (often
+      # minutes), which would hold a request thread hostage the whole time.
+      connect-timeout: ${HTTP_CLIENT_CONNECT_TIMEOUT:5s}
+      read-timeout: ${HTTP_CLIENT_READ_TIMEOUT:30s}
+  cache:
+    cache-names: embeddings
+    caffeine:
+      # Phase 16: repeat identical text (the same support question asked
+      # twice, a knowledge-base search re-run) skips a real, billed OpenAI
+      # embedding call entirely. Bounded size + a TTL, not "cache forever" -
+      # an unbounded cache is a memory leak wearing a performance-feature
+      # costume, and a TTL means a model/config change eventually flushes
+      # stale vectors on its own rather than needing a manual cache-bust.
+      spec: maximumSize=5000,expireAfterWrite=1h
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/ai_platform}
     username: ${DB_USERNAME:ai_platform}
@@ -65,6 +97,14 @@ app:
   mcp:
     demo-client:
       base-url: ${MCP_DEMO_CLIENT_BASE_URL:http://localhost:${server.port}}
+  rate-limit:
+    # Per-authenticated-caller (falls back to remote IP if unauthenticated)
+    # request budget - see RateLimitFilter. Deliberately generous (this is a
+    # support tool, not a public API), sized to stop a runaway script or a
+    # compromised credential from hammering the (billed, per-call) LLM
+    # endpoints, not to shape normal interactive traffic.
+    requests-per-window: ${RATE_LIMIT_REQUESTS_PER_WINDOW:30}
+    window-seconds: ${RATE_LIMIT_WINDOW_SECONDS:60}
 
 server:
   port: ${SERVER_PORT:8080}
@@ -73,7 +113,50 @@ springdoc:
   swagger-ui:
     path: /swagger-ui.html
 
+resilience4j:
+  circuitbreaker:
+    instances:
+      llm:
+        # Trips after 5 of the last 10 calls fail (spring.ai.retry above has
+        # already exhausted its own attempts by the time a call counts as a
+        # "failure" here - the two are layered, not duplicated: retry absorbs
+        # brief blips, the breaker responds to sustained provider trouble).
+        # Once open, fails fast for 20s instead of letting every request
+        # queue up behind a provider that's already down.
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 20s
+        permitted-number-of-calls-in-half-open-state: 3
+        # A guardrail rejection (Phase 12's token-budget check) is thrown
+        # from inside the same breaker-guarded method but has nothing to do
+        # with the LLM provider's health - without this, a caller repeatedly
+        # sending oversized prompts could trip the breaker for every caller.
+        ignore-exceptions:
+          - com.example.aiplatform.exception.PromptTooLargeException
+      vectorSearch:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 15s
+        permitted-number-of-calls-in-half-open-state: 3
+
 management:
+  health:
+    circuitbreakers:
+      # Surfaces breaker state (CLOSED/OPEN/HALF_OPEN) as a health component -
+      # an operator hitting /actuator/health can see "the LLM breaker is open"
+      # directly, instead of inferring it from a spike in 502s.
+      enabled: true
+  endpoint:
+    health:
+      # Terse UP/DOWN for the unauthenticated Prometheus/liveness audience
+      # (see SecurityConfig's permitAll on this path); an authenticated
+      # request (HTTP Basic) sees the full per-component breakdown -
+      # database, Redis, disk space, circuit breakers - without needing a
+      # second, separately-secured endpoint.
+      show-details: when-authorized
+      show-components: when-authorized
   endpoints:
     web:
       exposure:
