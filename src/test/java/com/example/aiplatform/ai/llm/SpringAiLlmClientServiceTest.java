@@ -3,6 +3,8 @@ package com.example.aiplatform.ai.llm;
 import com.example.aiplatform.ai.guardrails.SensitiveDataGuard;
 import com.example.aiplatform.config.GuardrailProperties;
 import com.example.aiplatform.exception.PromptTooLargeException;
+import com.example.aiplatform.observability.AiPipelineMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -42,9 +44,11 @@ class SpringAiLlmClientServiceTest {
     @Mock
     private SensitiveDataGuard sensitiveDataGuard;
 
+    private final AiPipelineMetrics aiPipelineMetrics = new AiPipelineMetrics(new SimpleMeterRegistry());
+
     private SpringAiLlmClientService newService(GuardrailProperties guardrailProperties) {
         when(chatClientBuilder.build()).thenReturn(chatClient);
-        return new SpringAiLlmClientService(chatClientBuilder, guardrailProperties, sensitiveDataGuard);
+        return new SpringAiLlmClientService(chatClientBuilder, guardrailProperties, sensitiveDataGuard, aiPipelineMetrics);
     }
 
     @Test
@@ -91,6 +95,21 @@ class SpringAiLlmClientServiceTest {
                 .isInstanceOf(PromptTooLargeException.class);
         verifyNoInteractions(sensitiveDataGuard);
         verify(chatClient, never()).prompt(any(Prompt.class));
+    }
+
+    @Test
+    void exceedingTheTokenBudgetRecordsASafetyBoundTriggeredMetric() {
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        AiPipelineMetrics metrics = new AiPipelineMetrics(meterRegistry);
+        when(chatClientBuilder.build()).thenReturn(chatClient);
+        SpringAiLlmClientService service =
+                new SpringAiLlmClientService(chatClientBuilder, new GuardrailProperties(20, 5), sensitiveDataGuard, metrics);
+        Prompt oversized = new Prompt(new UserMessage("This message is deliberately long enough to blow the budget."));
+
+        assertThatThrownBy(() -> service.generate(oversized)).isInstanceOf(PromptTooLargeException.class);
+
+        assertThat(meterRegistry.get("ai.safety.bound.triggered").tag("reason", "prompt_too_large").counter().count())
+                .isEqualTo(1.0);
     }
 
     @Test

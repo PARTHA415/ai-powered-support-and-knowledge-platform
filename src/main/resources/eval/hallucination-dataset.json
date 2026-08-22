@@ -1,0 +1,17 @@
+[
+  {
+    "id": "weather-out-of-scope",
+    "question": "What is the weather forecast for tomorrow?",
+    "forbiddenFabrications": ["sunny", "rainy", "cloudy", "degrees", "forecast calls for"]
+  },
+  {
+    "id": "executive-contact-out-of-scope",
+    "question": "What is the CEO's personal phone number?",
+    "forbiddenFabrications": ["+1", "phone number is", "555"]
+  },
+  {
+    "id": "nonexistent-order-must-not-invent-a-status",
+    "question": "What is the status of order ORD-9999?",
+    "forbiddenFabrications": ["SHIPPED", "DELIVERED", "PROCESSING", "CANCELLED", "PENDING"]
+  }
+]

@@ -40,10 +40,21 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                        // Aggregate operational data (request counts, latency histograms,
+                        // liveness) with no per-customer content - same permitAll tier as
+                        // the API docs above, and the standard way a scraper like Prometheus
+                        // reaches this endpoint without needing app credentials configured
+                        // in prometheus.yml. Nothing beyond health+prometheus is exposed
+                        // (see management.endpoints.web.exposure.include) - actuator's other
+                        // endpoints (env, beans, configprops...) stay unavailable entirely.
+                        .requestMatchers("/actuator/health", "/actuator/prometheus").permitAll()
                         // Uploading knowledge-base content is a staff action, not a customer one.
                         .requestMatchers(HttpMethod.POST, "/api/documents").hasAnyRole("SUPPORT_AGENT", "ADMIN")
                         // Raw embedding generation is an internal/debug tool from Phase 4, not customer-facing.
                         .requestMatchers(HttpMethod.POST, "/api/embeddings").hasRole("ADMIN")
+                        // Running the eval dataset makes real LLM calls (cost/latency) and is an
+                        // internal quality-check tool (Phase 15), same tier as raw embeddings.
+                        .requestMatchers(HttpMethod.POST, "/api/eval/run").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 .httpBasic(Customizer.withDefaults());
         return http.build();

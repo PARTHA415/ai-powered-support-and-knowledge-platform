@@ -13,6 +13,7 @@ import com.example.aiplatform.model.AgentPlan;
 import com.example.aiplatform.model.AgentResponse;
 import com.example.aiplatform.model.AgentStepRecord;
 import com.example.aiplatform.model.SemanticSearchResult;
+import com.example.aiplatform.observability.AiPipelineMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.memory.ChatMemory;
@@ -69,6 +70,7 @@ public class AgentServiceImpl implements AgentService {
     private final RagProperties ragProperties;
     private final AgentProperties agentProperties;
     private final PromptInjectionGuard promptInjectionGuard;
+    private final AiPipelineMetrics aiPipelineMetrics;
     private final String model;
 
     public AgentServiceImpl(PromptBuilder promptBuilder,
@@ -80,6 +82,7 @@ public class AgentServiceImpl implements AgentService {
                              RagProperties ragProperties,
                              AgentProperties agentProperties,
                              PromptInjectionGuard promptInjectionGuard,
+                             AiPipelineMetrics aiPipelineMetrics,
                              @Value("${spring.ai.openai.chat.options.model}") String model) {
         this.promptBuilder = promptBuilder;
         this.llmClientService = llmClientService;
@@ -90,6 +93,7 @@ public class AgentServiceImpl implements AgentService {
         this.ragProperties = ragProperties;
         this.agentProperties = agentProperties;
         this.promptInjectionGuard = promptInjectionGuard;
+        this.aiPipelineMetrics = aiPipelineMetrics;
         this.model = model;
     }
 
@@ -120,12 +124,14 @@ public class AgentServiceImpl implements AgentService {
             iteration++;
             if (iteration > agentProperties.maxIterations()) {
                 maxIterationsExceeded = true;
+                aiPipelineMetrics.recordSafetyBoundTriggered("agent_max_iterations_exceeded");
                 log.warn("Agent request {}: hit max iterations ({}) - stopping with partial evidence",
                         requestId, agentProperties.maxIterations());
                 break;
             }
             if (elapsedSeconds(startNanos) > agentProperties.timeoutSeconds()) {
                 timedOut = true;
+                aiPipelineMetrics.recordSafetyBoundTriggered("agent_timeout");
                 log.warn("Agent request {}: exceeded timeout ({}s) - stopping with partial evidence",
                         requestId, agentProperties.timeoutSeconds());
                 break;
@@ -136,6 +142,7 @@ public class AgentServiceImpl implements AgentService {
                 executeBusinessToolStep(question, history, evidenceBlocks, steps, requestId);
             }
         }
+        aiPipelineMetrics.recordAgentIterations(iteration);
 
         String answer = finalizeAnswer(question, history, evidenceBlocks, steps, requestId);
         saveTurn(conversationId, question, answer, steps);

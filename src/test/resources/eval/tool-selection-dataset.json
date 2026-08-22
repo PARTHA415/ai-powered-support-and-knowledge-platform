@@ -1,0 +1,58 @@
+[
+  {
+    "id": "get-order-for-own-customer-succeeds",
+    "toolName": "getOrder",
+    "arguments": {"orderId": "ORD-1001"},
+    "callerCustomerId": "CUST-1001",
+    "expectedOutcome": "SUCCESS",
+    "expectedResultContains": "SHIPPED"
+  },
+  {
+    "id": "get-order-for-another-customer-is-denied",
+    "toolName": "getOrder",
+    "arguments": {"orderId": "ORD-1001"},
+    "callerCustomerId": "CUST-1002",
+    "expectedOutcome": "DENIED",
+    "expectedResultContains": null
+  },
+  {
+    "id": "get-payment-status-for-own-order-succeeds",
+    "toolName": "getPaymentStatus",
+    "arguments": {"orderId": "ORD-1002"},
+    "callerCustomerId": "CUST-1002",
+    "expectedOutcome": "SUCCESS",
+    "expectedResultContains": "PENDING"
+  },
+  {
+    "id": "get-customer-profile-for-another-customer-is-denied",
+    "toolName": "getCustomer",
+    "arguments": {"customerId": "CUST-1001"},
+    "callerCustomerId": "CUST-1002",
+    "expectedOutcome": "DENIED",
+    "expectedResultContains": null
+  },
+  {
+    "id": "malformed-order-id-is-rejected-as-invalid-argument",
+    "toolName": "getOrder",
+    "arguments": {"orderId": "not-an-order-id"},
+    "callerCustomerId": "CUST-1001",
+    "expectedOutcome": "INVALID_ARGUMENT",
+    "expectedResultContains": null
+  },
+  {
+    "id": "well-formed-but-nonexistent-order-is-not-found",
+    "toolName": "getOrder",
+    "arguments": {"orderId": "ORD-9999"},
+    "callerCustomerId": "CUST-1001",
+    "expectedOutcome": "NOT_FOUND",
+    "expectedResultContains": null
+  },
+  {
+    "id": "check-inventory-needs-no-ownership",
+    "toolName": "checkInventory",
+    "arguments": {"productId": "PROD-2002"},
+    "callerCustomerId": null,
+    "expectedOutcome": "SUCCESS",
+    "expectedResultContains": "inStock=false"
+  }
+]

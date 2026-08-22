@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: ai-platform
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # host.docker.internal resolves to the host machine from inside a
+      # container on Docker Desktop (Windows/Mac) - the app runs on the host
+      # (`mvn spring-boot:run`), not as a container in this compose file, so
+      # this is how Prometheus (which DOES run in this compose file) reaches
+      # it. On native Linux Docker, host.docker.internal isn't defined by
+      # default - see the Phase 14 docs for the one-line fix.
+      - targets: ["host.docker.internal:8080"]

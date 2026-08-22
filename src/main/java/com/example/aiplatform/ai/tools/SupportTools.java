@@ -1,6 +1,9 @@
 package com.example.aiplatform.ai.tools;
 
+import com.example.aiplatform.ai.guardrails.PromptInjectionGuard;
 import com.example.aiplatform.ai.guardrails.ToolExecutionGuard;
+import com.example.aiplatform.ai.rag.SemanticSearchService;
+import com.example.aiplatform.config.RagProperties;
 import com.example.aiplatform.exception.InvalidToolArgumentException;
 import com.example.aiplatform.exception.ToolResourceNotFoundException;
 import com.example.aiplatform.exception.UnauthorizedToolAccessException;
@@ -9,6 +12,7 @@ import com.example.aiplatform.model.InventoryStatus;
 import com.example.aiplatform.model.Order;
 import com.example.aiplatform.model.PaymentStatus;
 import com.example.aiplatform.model.Role;
+import com.example.aiplatform.model.SemanticSearchResult;
 import com.example.aiplatform.model.ShipmentStatus;
 import com.example.aiplatform.security.CurrentUser;
 import org.slf4j.Logger;
@@ -17,6 +21,7 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.regex.Pattern;
 
 /**
@@ -37,6 +42,12 @@ import java.util.regex.Pattern;
  * SUPPORT_AGENT and ADMIN callers - real staff, verified by authentication,
  * never by anything the model claims - may access any customer's data, the
  * same way a real support agent legitimately can when helping a customer.
+ *
+ * As of Phase 13, this same instance is also registered as an MCP
+ * {@code ToolCallbackProvider} bean ({@code config/McpServerConfig}) and
+ * exposed over this application's MCP server - a second transport for the
+ * exact same methods and the exact same {@link CurrentUser}-based
+ * authorization, not a second implementation of either.
  */
 @Component
 public class SupportTools {
@@ -49,10 +60,20 @@ public class SupportTools {
 
     private final BusinessDataStore businessDataStore;
     private final ToolExecutionGuard toolExecutionGuard;
+    private final SemanticSearchService semanticSearchService;
+    private final RagProperties ragProperties;
+    private final PromptInjectionGuard promptInjectionGuard;
 
-    public SupportTools(BusinessDataStore businessDataStore, ToolExecutionGuard toolExecutionGuard) {
+    public SupportTools(BusinessDataStore businessDataStore,
+                         ToolExecutionGuard toolExecutionGuard,
+                         SemanticSearchService semanticSearchService,
+                         RagProperties ragProperties,
+                         PromptInjectionGuard promptInjectionGuard) {
         this.businessDataStore = businessDataStore;
         this.toolExecutionGuard = toolExecutionGuard;
+        this.semanticSearchService = semanticSearchService;
+        this.ragProperties = ragProperties;
+        this.promptInjectionGuard = promptInjectionGuard;
     }
 
     @Tool(description = "Get an order's status, total amount, and order date by order ID")
@@ -117,6 +138,31 @@ public class SupportTools {
                 .orElseThrow(() -> new ToolResourceNotFoundException("No product found with ID " + productId));
         log.debug("checkInventory({}) -> {} units", productId, inventoryStatus.quantityAvailable());
         return inventoryStatus;
+    }
+
+    @Tool(description = "Search the internal knowledge base for documentation relevant to a support or "
+            + "troubleshooting question")
+    public List<SemanticSearchResult> searchKnowledgeBase(
+            @ToolParam(description = "The search query, e.g. a support question or a topic to look up")
+            String query) {
+        toolExecutionGuard.recordInvocation("searchKnowledgeBase");
+        // Deliberately no caller-ownership check, like checkInventory: the
+        // knowledge base is general documentation, not scoped to any one
+        // customer (see the Phase 11 docs on why per-document ACLs were
+        // deferred). Each chunk is still sanitized before it reaches the
+        // model - the same indirect-injection defense QuestionAnsweringService
+        // and AgentService apply, because this is the same retrieved,
+        // untrusted content reaching the LLM through one more path.
+        List<SemanticSearchResult> results = semanticSearchService.search(query, ragProperties.topK());
+        List<SemanticSearchResult> sanitized = results.stream()
+                .map(result -> new SemanticSearchResult(
+                        result.documentTitle(), promptInjectionGuard.sanitize(result.content()), result.similarity()))
+                .toList();
+        // Logs the query LENGTH, never its content - a support question can
+        // easily contain a name, an email address, or other PII typed by
+        // the caller (Phase 14's "never log sensitive prompts" rule).
+        log.debug("searchKnowledgeBase(query.length={}) -> {} result(s)", query.length(), sanitized.size());
+        return sanitized;
     }
 
     private static void validateOrderId(String orderId) {

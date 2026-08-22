@@ -1,0 +1,171 @@
+{
+  "id": null,
+  "uid": "ai-platform-overview",
+  "title": "AI Platform Overview",
+  "description": "Phase 14: end-to-end observability for the AI pipeline - REST, RAG/vector search, LLM/embedding calls, tool calls, and agent/guardrail safety bounds.",
+  "tags": ["ai-platform"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "REST API",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "API latency (p50 / p95 / p99)",
+      "description": "http.server.requests - every REST endpoint, free from Spring Boot's own web observation filter.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(http_server_requests_seconds_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket[5m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket[5m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Request rate by endpoint",
+      "description": "Request count, broken down by URI - the free http.server.requests counter.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(http_server_requests_seconds_count[5m])) by (uri)", "legendFormat": "{{uri}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Failures (4xx / 5xx)",
+      "description": "outcome=CLIENT_ERROR covers guardrail rejections (400/413/429) too - they surface here even without a dedicated counter.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(http_server_requests_seconds_count{outcome=\"CLIENT_ERROR\"}[5m])) by (uri)", "legendFormat": "4xx {{uri}}" },
+        { "expr": "sum(rate(http_server_requests_seconds_count{outcome=\"SERVER_ERROR\"}[5m])) by (uri)", "legendFormat": "5xx {{uri}}" }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "LLM & Embeddings",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "LLM (chat) latency p95",
+      "description": "gen_ai.client.operation.duration, tagged gen_ai_operation_name=\"chat\" - free from Spring AI's chat observation. Confirm the exact tag value against /actuator/prometheus output for your provider.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(gen_ai_client_operation_duration_seconds_bucket{gen_ai_operation_name=\"chat\"}[5m])) by (le, gen_ai_response_model))", "legendFormat": "{{gen_ai_response_model}}" }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Embedding latency p95",
+      "description": "Same metric family, tagged gen_ai_operation_name=\"embeddings\".",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(gen_ai_client_operation_duration_seconds_bucket{gen_ai_operation_name=\"embeddings\"}[5m])) by (le))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Token usage by type",
+      "description": "gen_ai.client.token.usage - input/output/total tokens per second, free from Spring AI's chat observation.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(gen_ai_client_token_usage_total[5m])) by (gen_ai_token_type)", "legendFormat": "{{gen_ai_token_type}}" }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "RAG Pipeline & Tool Calls",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Vector-search latency p95",
+      "description": "rag.vector.search - hand-instrumented (Phase 14); measures the pgvector query only, excluding embedding generation.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(rag_vector_search_seconds_bucket[5m])) by (le))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "stat",
+      "title": "Avg. retrieved documents per search",
+      "description": "rag.retrieved.documents - hand-instrumented (Phase 14); chunks returned before similarity-threshold filtering.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(rag_retrieved_documents_sum[15m]) / rate(rag_retrieved_documents_count[15m])", "legendFormat": "avg documents" }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Tool-call latency p95 by tool",
+      "description": "spring.ai.tool - free from Spring AI's tool-calling observation; reached whether a tool is called in-process (Phase 8) or via MCP (Phase 13).",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(spring_ai_tool_seconds_bucket[5m])) by (le, spring_ai_tool_definition_name))", "legendFormat": "{{spring_ai_tool_definition_name}}" }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Agent Workflow & Safety Bounds",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }
+    },
+    {
+      "id": 31,
+      "type": "stat",
+      "title": "Avg. agent iterations per request",
+      "description": "agent.iterations - hand-instrumented (Phase 14); how many capability steps the agent workflow executed.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(agent_iterations_sum[15m]) / rate(agent_iterations_count[15m])", "legendFormat": "avg iterations" }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Safety bounds triggered, by reason",
+      "description": "ai.safety.bound.triggered - guardrail rejections and agent safety-bound truncations (Phase 12 + Phase 9), all in one counter family tagged by reason.",
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(increase(ai_safety_bound_triggered_total[15m])) by (reason)", "legendFormat": "{{reason}}" }
+      ]
+    }
+  ]
+}

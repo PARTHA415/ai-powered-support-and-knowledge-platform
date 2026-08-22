@@ -1,6 +1,7 @@
 package com.example.aiplatform.ai.llm;
 
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.tool.ToolCallbackProvider;
 
 /**
  * Thin seam over whichever LLM provider is wired up. Keeps callers (the
@@ -24,4 +25,13 @@ public interface LlmClientService {
      * returns only the final text answer.
      */
     String generateWithTools(Prompt prompt, Object... tools);
+
+    /**
+     * Same as {@link #generateWithTools(Prompt, Object...)}, but for tools
+     * sourced from a {@link ToolCallbackProvider} rather than annotated Java
+     * objects - the seam Phase 13's MCP client demonstration uses, since an
+     * MCP-discovered tool is already a {@code ToolCallback}, not a POJO with
+     * {@code @Tool} methods to reflect over.
+     */
+    String generateWithTools(Prompt prompt, ToolCallbackProvider toolCallbackProvider);
 }

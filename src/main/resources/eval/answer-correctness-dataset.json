@@ -1,0 +1,26 @@
+[
+  {
+    "id": "order-status-correct-fact",
+    "question": "What is the status of order ORD-1001?",
+    "requiredFacts": ["SHIPPED"],
+    "forbiddenFacts": ["PROCESSING", "CANCELLED", "DELIVERED", "PENDING"]
+  },
+  {
+    "id": "payment-status-correct-fact",
+    "question": "What is the payment status for order ORD-1002?",
+    "requiredFacts": ["PENDING"],
+    "forbiddenFacts": ["PAID", "FAILED", "REFUNDED"]
+  },
+  {
+    "id": "inventory-out-of-stock-fact",
+    "question": "How many units of product PROD-2002 are in stock?",
+    "requiredFacts": ["out of stock"],
+    "forbiddenFacts": ["in stock", "42"]
+  },
+  {
+    "id": "customer-tier-correct-fact",
+    "question": "What membership tier is customer CUST-1001?",
+    "requiredFacts": ["GOLD"],
+    "forbiddenFacts": ["STANDARD", "SILVER", "PLATINUM"]
+  }
+]

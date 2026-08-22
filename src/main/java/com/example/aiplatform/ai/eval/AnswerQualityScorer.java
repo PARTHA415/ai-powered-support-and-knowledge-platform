@@ -121,4 +121,39 @@ final class AnswerQualityScorer {
         }
         return citedIndexes.stream().allMatch(index -> index >= 1 && index <= sources.size());
     }
+
+    /**
+     * Stricter than {@link #relevanceScore}: the fraction of required facts
+     * present, UNLESS any forbidden fact is also present, in which case the
+     * whole score collapses to 0 regardless of how many required facts also
+     * showed up. A wrong-but-confident answer isn't "partially correct" -
+     * an answer that states both the right status and a wrong one is
+     * actively worse than one that states neither, and averaging the two
+     * away would hide that.
+     */
+    static double answerCorrectness(String answer, List<String> requiredFacts, List<String> forbiddenFacts) {
+        String lower = answer.toLowerCase();
+        boolean containsForbidden = forbiddenFacts.stream().anyMatch(fact -> lower.contains(fact.toLowerCase()));
+        if (containsForbidden) {
+            return 0.0;
+        }
+        if (requiredFacts.isEmpty()) {
+            return 1.0;
+        }
+        long matched = requiredFacts.stream().filter(fact -> lower.contains(fact.toLowerCase())).count();
+        return (double) matched / requiredFacts.size();
+    }
+
+    /**
+     * 1.0 (no hallucination detected) unless the answer contains one of the
+     * specific fabricated details {@code forbiddenFabrications} lists for
+     * this out-of-scope question - a binary check deliberately: for a
+     * question with no correct answer available at all, there is no partial
+     * credit for "mostly honest, but invented one specific detail."
+     */
+    static double hallucinationScore(String answer, List<String> forbiddenFabrications) {
+        String lower = answer.toLowerCase();
+        boolean fabricated = forbiddenFabrications.stream().anyMatch(detail -> lower.contains(detail.toLowerCase()));
+        return fabricated ? 0.0 : 1.0;
+    }
 }
