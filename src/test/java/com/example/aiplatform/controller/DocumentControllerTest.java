@@ -1,5 +1,6 @@
 package com.example.aiplatform.controller;
 
+import com.example.aiplatform.ai.guardrails.ToolExecutionGuard;
 import com.example.aiplatform.ai.rag.SemanticSearchService;
 import com.example.aiplatform.config.SecurityConfig;
 import com.example.aiplatform.model.IngestDocumentResponse;
@@ -30,7 +31,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * just "authenticated or not."
  */
 @WebMvcTest(DocumentController.class)
-@Import(SecurityConfig.class)
+@Import({SecurityConfig.class, ToolExecutionGuard.class})
 class DocumentControllerTest {
 
     @Autowired

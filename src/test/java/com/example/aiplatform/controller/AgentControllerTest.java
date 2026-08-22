@@ -1,5 +1,6 @@
 package com.example.aiplatform.controller;
 
+import com.example.aiplatform.ai.guardrails.ToolExecutionGuard;
 import com.example.aiplatform.config.SecurityConfig;
 import com.example.aiplatform.model.AgentAuditTrail;
 import com.example.aiplatform.model.AgentResponse;
@@ -29,7 +30,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * to an unconfigured security auto-configuration.
  */
 @WebMvcTest(AgentController.class)
-@Import(SecurityConfig.class)
+@Import({SecurityConfig.class, ToolExecutionGuard.class})
 class AgentControllerTest {
 
     @Autowired

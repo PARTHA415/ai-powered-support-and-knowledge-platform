@@ -1,12 +1,15 @@
 package com.example.aiplatform.service;
 
 import com.example.aiplatform.ai.embedding.EmbeddingService;
+import com.example.aiplatform.ai.guardrails.PromptInjectionGuard;
 import com.example.aiplatform.config.RagProperties;
 import com.example.aiplatform.model.Document;
 import com.example.aiplatform.model.DocumentChunk;
 import com.example.aiplatform.model.IngestDocumentResponse;
 import com.example.aiplatform.repository.DocumentChunkRepository;
 import com.example.aiplatform.repository.DocumentRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,24 +28,43 @@ import java.util.List;
 @Service
 public class DocumentIngestionServiceImpl implements DocumentIngestionService {
 
+    private static final Logger log = LoggerFactory.getLogger(DocumentIngestionServiceImpl.class);
+
     private final DocumentRepository documentRepository;
     private final DocumentChunkRepository documentChunkRepository;
     private final EmbeddingService embeddingService;
     private final RagProperties ragProperties;
+    private final PromptInjectionGuard promptInjectionGuard;
 
     public DocumentIngestionServiceImpl(DocumentRepository documentRepository,
                                          DocumentChunkRepository documentChunkRepository,
                                          EmbeddingService embeddingService,
-                                         RagProperties ragProperties) {
+                                         RagProperties ragProperties,
+                                         PromptInjectionGuard promptInjectionGuard) {
         this.documentRepository = documentRepository;
         this.documentChunkRepository = documentChunkRepository;
         this.embeddingService = embeddingService;
         this.ragProperties = ragProperties;
+        this.promptInjectionGuard = promptInjectionGuard;
     }
 
     @Override
     @Transactional
     public IngestDocumentResponse ingest(String title, String source, String content) {
+        // Log-only, not blocking: ingestion is already staff-only (Phase 11
+        // RBAC), and a document legitimately discussing injection techniques
+        // (e.g. a security runbook) shouldn't be rejected outright. The
+        // primary indirect-injection defense is sanitizing at the point
+        // content is actually spliced into a prompt (see
+        // QuestionAnsweringServiceImpl.buildContext / AgentServiceImpl's
+        // formatKnowledgeBaseEvidence) - this is the earlier, secondary
+        // signal: flag suspicious content at the source, for visibility.
+        if (promptInjectionGuard.containsInjectionAttempt(content)) {
+            log.warn("Ingested document '{}' contains text resembling a prompt-injection attempt; "
+                    + "it will still be stored, but is sanitized at retrieval time before being "
+                    + "spliced into any LLM prompt.", title);
+        }
+
         Document document = documentRepository.save(new Document(title, source));
 
         List<String> chunks = splitIntoChunks(content, ragProperties.chunkSize(), ragProperties.chunkOverlap());

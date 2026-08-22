@@ -39,6 +39,9 @@ app:
   memory:
     max-messages: ${MEMORY_MAX_MESSAGES:20}
     ttl-hours: ${MEMORY_TTL_HOURS:24}
+  guardrails:
+    max-tool-calls-per-request: ${GUARDRAILS_MAX_TOOL_CALLS:20}
+    max-prompt-tokens: ${GUARDRAILS_MAX_PROMPT_TOKENS:6000}
 
 server:
   port: ${SERVER_PORT:8080}

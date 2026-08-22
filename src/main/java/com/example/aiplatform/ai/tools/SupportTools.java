@@ -1,5 +1,6 @@
 package com.example.aiplatform.ai.tools;
 
+import com.example.aiplatform.ai.guardrails.ToolExecutionGuard;
 import com.example.aiplatform.exception.InvalidToolArgumentException;
 import com.example.aiplatform.exception.ToolResourceNotFoundException;
 import com.example.aiplatform.exception.UnauthorizedToolAccessException;
@@ -47,13 +48,16 @@ public class SupportTools {
     private static final Pattern PRODUCT_ID_PATTERN = Pattern.compile("^PROD-\\d{4,}$");
 
     private final BusinessDataStore businessDataStore;
+    private final ToolExecutionGuard toolExecutionGuard;
 
-    public SupportTools(BusinessDataStore businessDataStore) {
+    public SupportTools(BusinessDataStore businessDataStore, ToolExecutionGuard toolExecutionGuard) {
         this.businessDataStore = businessDataStore;
+        this.toolExecutionGuard = toolExecutionGuard;
     }
 
     @Tool(description = "Get an order's status, total amount, and order date by order ID")
     public Order getOrder(@ToolParam(description = "The order ID, formatted like ORD-1001") String orderId) {
+        toolExecutionGuard.recordInvocation("getOrder");
         validateOrderId(orderId);
         Order order = businessDataStore.findOrder(orderId)
                 .orElseThrow(() -> new ToolResourceNotFoundException("No order found with ID " + orderId));
@@ -65,6 +69,7 @@ public class SupportTools {
     @Tool(description = "Get the payment status and amount paid for an order by order ID")
     public PaymentStatus getPaymentStatus(
             @ToolParam(description = "The order ID, formatted like ORD-1001") String orderId) {
+        toolExecutionGuard.recordInvocation("getPaymentStatus");
         validateOrderId(orderId);
         Order order = businessDataStore.findOrder(orderId)
                 .orElseThrow(() -> new ToolResourceNotFoundException("No order found with ID " + orderId));
@@ -78,6 +83,7 @@ public class SupportTools {
     @Tool(description = "Get shipment carrier, tracking number, and delivery status for an order by order ID")
     public ShipmentStatus getShipmentStatus(
             @ToolParam(description = "The order ID, formatted like ORD-1001") String orderId) {
+        toolExecutionGuard.recordInvocation("getShipmentStatus");
         validateOrderId(orderId);
         Order order = businessDataStore.findOrder(orderId)
                 .orElseThrow(() -> new ToolResourceNotFoundException("No order found with ID " + orderId));
@@ -91,6 +97,7 @@ public class SupportTools {
     @Tool(description = "Get a customer's profile (name, email, membership tier) by customer ID")
     public Customer getCustomer(
             @ToolParam(description = "The customer ID, formatted like CUST-1001") String customerId) {
+        toolExecutionGuard.recordInvocation("getCustomer");
         validateCustomerId(customerId);
         requireOwnedByCaller(customerId, "customer profile " + customerId);
         Customer customer = businessDataStore.findCustomer(customerId)
@@ -102,6 +109,7 @@ public class SupportTools {
     @Tool(description = "Check how many units of a product are currently in stock by product ID")
     public InventoryStatus checkInventory(
             @ToolParam(description = "The product ID, formatted like PROD-2001") String productId) {
+        toolExecutionGuard.recordInvocation("checkInventory");
         validateProductId(productId);
         // Deliberately no caller-ownership check: inventory is general
         // product data, not scoped to any one customer.

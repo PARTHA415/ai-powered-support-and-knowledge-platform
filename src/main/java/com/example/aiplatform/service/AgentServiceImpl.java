@@ -1,5 +1,6 @@
 package com.example.aiplatform.service;
 
+import com.example.aiplatform.ai.guardrails.PromptInjectionGuard;
 import com.example.aiplatform.ai.llm.LlmClientService;
 import com.example.aiplatform.ai.prompt.PromptBuilder;
 import com.example.aiplatform.ai.rag.SemanticSearchService;
@@ -67,6 +68,7 @@ public class AgentServiceImpl implements AgentService {
     private final ChatMemory chatMemory;
     private final RagProperties ragProperties;
     private final AgentProperties agentProperties;
+    private final PromptInjectionGuard promptInjectionGuard;
     private final String model;
 
     public AgentServiceImpl(PromptBuilder promptBuilder,
@@ -77,6 +79,7 @@ public class AgentServiceImpl implements AgentService {
                              ChatMemory chatMemory,
                              RagProperties ragProperties,
                              AgentProperties agentProperties,
+                             PromptInjectionGuard promptInjectionGuard,
                              @Value("${spring.ai.openai.chat.options.model}") String model) {
         this.promptBuilder = promptBuilder;
         this.llmClientService = llmClientService;
@@ -86,11 +89,13 @@ public class AgentServiceImpl implements AgentService {
         this.chatMemory = chatMemory;
         this.ragProperties = ragProperties;
         this.agentProperties = agentProperties;
+        this.promptInjectionGuard = promptInjectionGuard;
         this.model = model;
     }
 
     @Override
     public AgentResponse handle(String conversationId, String question) {
+        promptInjectionGuard.assertSafe(question);
         long startNanos = System.nanoTime();
         String requestId = UUID.randomUUID().toString();
         List<AgentStepRecord> steps = new ArrayList<>();
@@ -277,7 +282,15 @@ public class AgentServiceImpl implements AgentService {
         return new Prompt(combined);
     }
 
-    private static String formatKnowledgeBaseEvidence(List<SemanticSearchResult> relevant) {
+    /**
+     * Instance method (not static) because it now sanitizes each chunk
+     * through {@link PromptInjectionGuard#sanitize(String)} before it's
+     * spliced into evidence the final-synthesis prompt trusts - the same
+     * indirect-injection defense as {@link QuestionAnsweringServiceImpl}'s
+     * buildContext, applied here because the agent workflow retrieves
+     * knowledge-base content too.
+     */
+    private String formatKnowledgeBaseEvidence(List<SemanticSearchResult> relevant) {
         if (relevant.isEmpty()) {
             return "Knowledge base: no sufficiently relevant documentation was found.";
         }
@@ -285,7 +298,7 @@ public class AgentServiceImpl implements AgentService {
         for (int i = 0; i < relevant.size(); i++) {
             SemanticSearchResult chunk = relevant.get(i);
             block.append("[KB").append(i + 1).append("] (").append(chunk.documentTitle()).append(") ")
-                    .append(chunk.content()).append('\n');
+                    .append(promptInjectionGuard.sanitize(chunk.content())).append('\n');
         }
         return block.toString();
     }

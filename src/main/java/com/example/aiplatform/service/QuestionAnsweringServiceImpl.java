@@ -1,5 +1,6 @@
 package com.example.aiplatform.service;
 
+import com.example.aiplatform.ai.guardrails.PromptInjectionGuard;
 import com.example.aiplatform.ai.llm.LlmClientService;
 import com.example.aiplatform.ai.prompt.PromptBuilder;
 import com.example.aiplatform.ai.rag.SemanticSearchService;
@@ -32,22 +33,26 @@ public class QuestionAnsweringServiceImpl implements QuestionAnsweringService {
     private final PromptBuilder promptBuilder;
     private final LlmClientService llmClientService;
     private final RagProperties ragProperties;
+    private final PromptInjectionGuard promptInjectionGuard;
     private final String model;
 
     public QuestionAnsweringServiceImpl(SemanticSearchService semanticSearchService,
                                          PromptBuilder promptBuilder,
                                          LlmClientService llmClientService,
                                          RagProperties ragProperties,
+                                         PromptInjectionGuard promptInjectionGuard,
                                          @Value("${spring.ai.openai.chat.options.model}") String model) {
         this.semanticSearchService = semanticSearchService;
         this.promptBuilder = promptBuilder;
         this.llmClientService = llmClientService;
         this.ragProperties = ragProperties;
+        this.promptInjectionGuard = promptInjectionGuard;
         this.model = model;
     }
 
     @Override
     public AskResponse answer(String question) {
+        promptInjectionGuard.assertSafe(question);
         List<SemanticSearchResult> retrieved = semanticSearchService.search(question, ragProperties.topK());
 
         List<SemanticSearchResult> relevant = retrieved.stream()
@@ -65,7 +70,15 @@ public class QuestionAnsweringServiceImpl implements QuestionAnsweringService {
         return new AskResponse(answer, model, relevant);
     }
 
-    private static String buildContext(List<SemanticSearchResult> chunks) {
+    /**
+     * Instance method (not static) because it now sanitizes each chunk
+     * through {@link PromptInjectionGuard#sanitize(String)} before splicing
+     * it into the prompt - the indirect-injection defense: a knowledge-base
+     * document is untrusted content the application retrieved, not
+     * something the live caller typed, so any injection pattern found here
+     * gets redacted rather than the whole request being rejected.
+     */
+    private String buildContext(List<SemanticSearchResult> chunks) {
         if (chunks.isEmpty()) {
             return "No relevant documentation was found in the knowledge base.";
         }
@@ -73,7 +86,7 @@ public class QuestionAnsweringServiceImpl implements QuestionAnsweringService {
         for (int i = 0; i < chunks.size(); i++) {
             SemanticSearchResult chunk = chunks.get(i);
             context.append('[').append(i + 1).append("] (").append(chunk.documentTitle()).append(") ")
-                    .append(chunk.content()).append(System.lineSeparator());
+                    .append(promptInjectionGuard.sanitize(chunk.content())).append(System.lineSeparator());
         }
         return context.toString();
     }

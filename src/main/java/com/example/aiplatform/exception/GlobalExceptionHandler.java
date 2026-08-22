@@ -47,6 +47,25 @@ public class GlobalExceptionHandler {
                 .body(ErrorResponse.of(HttpStatus.FORBIDDEN.value(), "Forbidden", ex.getMessage()));
     }
 
+    @ExceptionHandler(PromptInjectionException.class)
+    public ResponseEntity<ErrorResponse> handlePromptInjection(PromptInjectionException ex) {
+        log.warn("Blocked a request matching a prompt-injection pattern: {}", ex.getMessage());
+        return ResponseEntity.badRequest()
+                .body(ErrorResponse.of(HttpStatus.BAD_REQUEST.value(), "Bad Request", ex.getMessage()));
+    }
+
+    @ExceptionHandler(PromptTooLargeException.class)
+    public ResponseEntity<ErrorResponse> handlePromptTooLarge(PromptTooLargeException ex) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(ErrorResponse.of(HttpStatus.PAYLOAD_TOO_LARGE.value(), "Payload Too Large", ex.getMessage()));
+    }
+
+    @ExceptionHandler(ToolExecutionLimitExceededException.class)
+    public ResponseEntity<ErrorResponse> handleToolExecutionLimitExceeded(ToolExecutionLimitExceededException ex) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .body(ErrorResponse.of(HttpStatus.TOO_MANY_REQUESTS.value(), "Too Many Requests", ex.getMessage()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnexpected(Exception ex) {
         log.error("Unhandled exception", ex);

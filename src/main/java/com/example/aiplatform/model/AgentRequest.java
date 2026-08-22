@@ -1,6 +1,7 @@
 package com.example.aiplatform.model;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 
 /**
  * No customerId field, as of Phase 11 - the caller's identity comes from
@@ -10,8 +11,10 @@ import jakarta.validation.constraints.NotBlank;
  */
 public record AgentRequest(
         @NotBlank(message = "conversationId must not be blank")
+        @Size(max = 200, message = "conversationId must not exceed 200 characters")
         String conversationId,
         @NotBlank(message = "message must not be blank")
+        @Size(max = 4000, message = "message must not exceed 4000 characters")
         String message
 ) {
 }

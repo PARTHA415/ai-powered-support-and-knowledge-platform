@@ -1,6 +1,8 @@
 package com.example.aiplatform.service;
 
 import com.example.aiplatform.ai.embedding.EmbeddingService;
+import com.example.aiplatform.ai.guardrails.PatternBasedPromptInjectionGuard;
+import com.example.aiplatform.ai.guardrails.PromptInjectionGuard;
 import com.example.aiplatform.config.RagProperties;
 import com.example.aiplatform.model.Document;
 import com.example.aiplatform.model.DocumentChunk;
@@ -29,6 +31,7 @@ import static org.mockito.Mockito.when;
 class DocumentIngestionServiceImplTest {
 
     private static final RagProperties DEFAULT_RAG_PROPERTIES = new RagProperties(800, 100, 5, 0.5);
+    private final PromptInjectionGuard promptInjectionGuard = new PatternBasedPromptInjectionGuard();
 
     @Mock
     private DocumentRepository documentRepository;
@@ -46,7 +49,7 @@ class DocumentIngestionServiceImplTest {
         when(embeddingService.embed(anyString())).thenReturn(new float[] {0.1f});
 
         DocumentIngestionServiceImpl service = new DocumentIngestionServiceImpl(
-                documentRepository, documentChunkRepository, embeddingService, DEFAULT_RAG_PROPERTIES);
+                documentRepository, documentChunkRepository, embeddingService, DEFAULT_RAG_PROPERTIES, promptInjectionGuard);
 
         String longContent = "word ".repeat(400); // ~2000 chars, well past the 800-char chunk size
         IngestDocumentResponse response = service.ingest("Kafka Troubleshooting", "kb/kafka.md", longContent);
@@ -64,7 +67,7 @@ class DocumentIngestionServiceImplTest {
         when(embeddingService.embed(anyString())).thenReturn(new float[] {0.1f});
 
         DocumentIngestionServiceImpl service = new DocumentIngestionServiceImpl(
-                documentRepository, documentChunkRepository, embeddingService, DEFAULT_RAG_PROPERTIES);
+                documentRepository, documentChunkRepository, embeddingService, DEFAULT_RAG_PROPERTIES, promptInjectionGuard);
 
         IngestDocumentResponse response = service.ingest("Short Doc", null, "How do I reset my password?");
 
@@ -79,7 +82,7 @@ class DocumentIngestionServiceImplTest {
 
         RagProperties withOverlap = new RagProperties(50, 20, 5, 0.5);
         DocumentIngestionServiceImpl service = new DocumentIngestionServiceImpl(
-                documentRepository, documentChunkRepository, embeddingService, withOverlap);
+                documentRepository, documentChunkRepository, embeddingService, withOverlap, promptInjectionGuard);
 
         List<String> chunks = ingestAndCaptureChunkTexts(service, uniqueWordContent(80));
 
@@ -95,7 +98,7 @@ class DocumentIngestionServiceImplTest {
 
         RagProperties noOverlap = new RagProperties(50, 0, 5, 0.5);
         DocumentIngestionServiceImpl service = new DocumentIngestionServiceImpl(
-                documentRepository, documentChunkRepository, embeddingService, noOverlap);
+                documentRepository, documentChunkRepository, embeddingService, noOverlap, promptInjectionGuard);
 
         List<String> chunks = ingestAndCaptureChunkTexts(service, uniqueWordContent(80));
 

@@ -1,5 +1,6 @@
 package com.example.aiplatform.controller;
 
+import com.example.aiplatform.ai.guardrails.ToolExecutionGuard;
 import com.example.aiplatform.config.SecurityConfig;
 import com.example.aiplatform.exception.LlmIntegrationException;
 import com.example.aiplatform.model.ChatResponse;
@@ -23,7 +24,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(ChatController.class)
-@Import(SecurityConfig.class)
+@Import({SecurityConfig.class, ToolExecutionGuard.class})
 class ChatControllerTest {
 
     @Autowired

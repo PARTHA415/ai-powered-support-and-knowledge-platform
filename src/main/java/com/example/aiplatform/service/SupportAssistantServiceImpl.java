@@ -1,5 +1,6 @@
 package com.example.aiplatform.service;
 
+import com.example.aiplatform.ai.guardrails.PromptInjectionGuard;
 import com.example.aiplatform.ai.llm.LlmClientService;
 import com.example.aiplatform.ai.prompt.PromptBuilder;
 import com.example.aiplatform.ai.tools.SupportTools;
@@ -25,20 +26,24 @@ public class SupportAssistantServiceImpl implements SupportAssistantService {
     private final PromptBuilder promptBuilder;
     private final LlmClientService llmClientService;
     private final SupportTools supportTools;
+    private final PromptInjectionGuard promptInjectionGuard;
     private final String model;
 
     public SupportAssistantServiceImpl(PromptBuilder promptBuilder,
                                         LlmClientService llmClientService,
                                         SupportTools supportTools,
+                                        PromptInjectionGuard promptInjectionGuard,
                                         @Value("${spring.ai.openai.chat.options.model}") String model) {
         this.promptBuilder = promptBuilder;
         this.llmClientService = llmClientService;
         this.supportTools = supportTools;
+        this.promptInjectionGuard = promptInjectionGuard;
         this.model = model;
     }
 
     @Override
     public ChatResponse assist(String message) {
+        promptInjectionGuard.assertSafe(message);
         Prompt prompt = promptBuilder.buildToolsSupportPrompt(message);
         String answer = llmClientService.generateWithTools(prompt, supportTools);
         return new ChatResponse(answer, model);

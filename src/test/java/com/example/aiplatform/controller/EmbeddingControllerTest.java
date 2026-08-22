@@ -1,6 +1,7 @@
 package com.example.aiplatform.controller;
 
 import com.example.aiplatform.ai.embedding.EmbeddingService;
+import com.example.aiplatform.ai.guardrails.ToolExecutionGuard;
 import com.example.aiplatform.config.SecurityConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,7 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * customer-facing - ADMIN only, per SecurityConfig.
  */
 @WebMvcTest(EmbeddingController.class)
-@Import(SecurityConfig.class)
+@Import({SecurityConfig.class, ToolExecutionGuard.class})
 class EmbeddingControllerTest {
 
     @Autowired

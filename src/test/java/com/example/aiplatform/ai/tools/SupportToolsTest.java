@@ -1,5 +1,7 @@
 package com.example.aiplatform.ai.tools;
 
+import com.example.aiplatform.ai.guardrails.ToolExecutionGuard;
+import com.example.aiplatform.config.GuardrailProperties;
 import com.example.aiplatform.model.Role;
 import com.example.aiplatform.security.TestPrincipals;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -37,7 +39,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SupportToolsTest {
 
     private final BusinessDataStore businessDataStore = new BusinessDataStore();
-    private final SupportTools supportTools = new SupportTools(businessDataStore);
+    private final SupportTools supportTools =
+            new SupportTools(businessDataStore, new ToolExecutionGuard(new GuardrailProperties(20, 6000)));
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private final ToolCallback[] toolCallbacks = MethodToolCallbackProvider.builder()
@@ -199,6 +202,32 @@ class SupportToolsTest {
         JsonNode result = callTool("getCustomer", "{\"customerId\":\"CUST-1002\"}");
 
         assertThat(result.get("customerId").asText()).isEqualTo("CUST-1002");
+    }
+
+    // --- Phase 12: maximum tool execution guardrail ---
+    //
+    // A separate SupportTools/ToolExecutionGuard pair with a deliberately low
+    // limit, so the third call in this test - still well-formed, still
+    // authorized - is refused purely on call-count, independent of every
+    // other check above. Demonstrates the defense against a model stuck
+    // calling tools instead of ever producing a final answer.
+
+    @Test
+    void thirdToolCallInOneRequestIsRefusedOnceTheConfiguredLimitIsExceeded() throws Exception {
+        SupportTools limitedTools = new SupportTools(businessDataStore, new ToolExecutionGuard(new GuardrailProperties(2, 6000)));
+        ToolCallback checkInventory = Arrays.stream(MethodToolCallbackProvider.builder()
+                        .toolObjects(limitedTools).build().getToolCallbacks())
+                .filter(callback -> callback.getToolDefinition().name().equals("checkInventory"))
+                .findFirst()
+                .orElseThrow();
+
+        checkInventory.call("{\"productId\":\"PROD-2001\"}");
+        checkInventory.call("{\"productId\":\"PROD-2001\"}");
+
+        assertThatThrownBy(() -> checkInventory.call("{\"productId\":\"PROD-2001\"}"))
+                .isInstanceOf(ToolExecutionException.class)
+                .cause()
+                .isInstanceOf(com.example.aiplatform.exception.ToolExecutionLimitExceededException.class);
     }
 
     private ToolCallback findTool(String name) {
