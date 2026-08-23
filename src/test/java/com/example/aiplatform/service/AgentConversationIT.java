@@ -3,9 +3,13 @@ package com.example.aiplatform.service;
 import com.example.aiplatform.ai.embedding.EmbeddingService;
 import com.example.aiplatform.ai.llm.LlmClientService;
 import com.example.aiplatform.model.AgentResponse;
+import com.example.aiplatform.model.AppUser;
+import com.example.aiplatform.model.Role;
+import com.example.aiplatform.security.AppUserPrincipal;
 import com.example.aiplatform.security.TestPrincipals;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.springframework.test.context.ActiveProfiles;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.messages.Message;
@@ -40,9 +44,10 @@ import static org.mockito.Mockito.when;
  * that actually proves "its" in turn two's question gets resolved using
  * information persisted from turn one, through real infrastructure.
  */
+@ActiveProfiles("dev")
 @Testcontainers
 @SpringBootTest
-class AgentConversationIntegrationTest {
+class AgentConversationIT {
 
     @Container
     @ServiceConnection
@@ -120,6 +125,45 @@ class AgentConversationIntegrationTest {
         assertThat(turnTwoFinalizeSawOrderNumber)
                 .as("turn two's final prompt should contain '12345' via conversation history retrieved from Redis")
                 .isTrue();
+    }
+
+    /**
+     * The same isolation property {@code OwnerScopedChatMemoryTest} asserts
+     * against an in-memory delegate, re-checked through the whole real stack -
+     * AgentServiceImpl, the message window, and actual Redis - because the
+     * unit test cannot prove the scoped key survives serialization and the
+     * repository layer, only that it is computed.
+     */
+    @Test
+    void anotherUserNamingTheSameConversationIdSeesNoneOfTheFirstUsersHistory() {
+        String conversationId = "conv-shared-id-" + System.nanoTime();
+
+        when(llmClientService.generate(any(Prompt.class))).thenAnswer(invocation -> {
+            Prompt prompt = invocation.getArgument(0);
+            if (prompt.getInstructions().get(0).getText().contains("planning component")) {
+                return "{\"reasoning\":\"no lookup needed\",\"needsKnowledgeBase\":false,\"needsBusinessTool\":false}";
+            }
+            return "Acknowledged.";
+        });
+
+        // Turn one, as the customer authenticated in @BeforeEach.
+        agentService.handle(conversationId, "My order is ORD-1001 and my email is alice@example.com.");
+
+        // A different authenticated user names the exact same conversation ID.
+        TestPrincipals.authenticateAs(
+                new AppUserPrincipal(new AppUser("mallory", "unused", "CUST-9999", Role.USER)));
+        agentService.handle(conversationId, "What did I say earlier?");
+
+        ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
+        verify(llmClientService, atLeastOnce()).generate(promptCaptor.capture());
+        boolean leakedToSecondUser = promptCaptor.getAllValues().stream()
+                .filter(prompt -> lastMessageText(prompt).contains("What did I say earlier?"))
+                .anyMatch(prompt -> allMessageText(prompt).stream()
+                        .anyMatch(text -> text != null && text.contains("ORD-1001")));
+
+        assertThat(leakedToSecondUser)
+                .as("a second user naming the same conversationId must not receive the first user's history")
+                .isFalse();
     }
 
     private static String lastMessageText(Prompt prompt) {

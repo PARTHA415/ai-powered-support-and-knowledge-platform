@@ -24,11 +24,27 @@ package com.example.aiplatform.ai.guardrails;
 public interface PromptInjectionGuard {
 
     /**
-     * True if the given text contains a recognizable injection, jailbreak,
-     * or unsafe-operation-request pattern. Never throws; used for
-     * non-blocking checks (e.g. flagging a document at ingestion time).
+     * True if the given text contains a recognizable injection or jailbreak
+     * pattern - meaning {@link #assertSafe(String)} WOULD reject it. Never
+     * throws; used for non-blocking checks (flagging a document at ingestion
+     * time) and by the safety evaluation, which relies on this answering the
+     * same question the blocking path asks.
      */
     boolean containsInjectionAttempt(String text);
+
+    /**
+     * True if the text contains SQL-shaped language with no imperative aimed
+     * at the assistant - {@code DROP TABLE}, {@code SELECT * FROM}, and so on.
+     *
+     * <p>Deliberately separate from {@link #containsInjectionAttempt(String)}
+     * and deliberately non-blocking. On a technical support platform this is
+     * the subject matter, not an attack: refusing it rejected legitimate
+     * questions, and redacting it from retrieved documents quietly gutted the
+     * SQL runbooks the knowledge base exists to serve. The real defense is that
+     * no tool accepts SQL, so there is nothing such text could reach. Worth a
+     * log line; not worth a refusal.
+     */
+    boolean containsSuspiciousDatabaseLanguage(String text);
 
     /**
      * Throws {@link com.example.aiplatform.exception.PromptInjectionException}

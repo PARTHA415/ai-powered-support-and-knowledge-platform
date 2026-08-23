@@ -276,6 +276,14 @@ public class AgentServiceImpl implements AgentService {
      * workflow - planning, the tool round, and final synthesis - can resolve
      * references like "its" against what was actually said earlier, without
      * PromptBuilder needing to know anything about conversation memory.
+     *
+     * <p>Carries {@code basePrompt.getOptions()} across to the rebuilt prompt.
+     * That is load-bearing, not defensive copying: PromptBuilder now attaches
+     * a per-call-site sampling temperature to every prompt it produces, and
+     * rebuilding without the options would silently drop the planning call
+     * back to the provider default - reintroducing exactly the
+     * non-determinism that change exists to remove, and only on the agent
+     * path, which is the hardest place to notice it.
      */
     private static Prompt withHistory(Prompt basePrompt, List<Message> history) {
         if (history.isEmpty()) {
@@ -286,7 +294,7 @@ public class AgentServiceImpl implements AgentService {
         combined.add(instructions.get(0));
         combined.addAll(history);
         combined.addAll(instructions.subList(1, instructions.size()));
-        return new Prompt(combined);
+        return new Prompt(combined, basePrompt.getOptions());
     }
 
     /**

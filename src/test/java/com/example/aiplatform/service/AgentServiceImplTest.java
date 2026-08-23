@@ -58,7 +58,7 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class AgentServiceImplTest {
 
-    private static final RagProperties RAG_PROPERTIES = new RagProperties(800, 100, 5, 0.5);
+    private static final RagProperties RAG_PROPERTIES = new RagProperties(800, 100, 32, 5, 0.5);
     private static final AgentProperties DEFAULT_AGENT_PROPERTIES = new AgentProperties(5, 30);
     private static final String QUESTION = "What's the status of order ORD-1001?";
     private static final String CUSTOMER_ID = "CUST-1001";

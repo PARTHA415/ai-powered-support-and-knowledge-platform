@@ -3,6 +3,7 @@ package com.example.aiplatform.service;
 import com.example.aiplatform.ai.embedding.EmbeddingService;
 import com.example.aiplatform.ai.llm.LlmClientService;
 import com.example.aiplatform.model.AskResponse;
+import org.springframework.test.context.ActiveProfiles;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,9 +17,12 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import java.util.List;
+
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -34,10 +38,11 @@ import static org.mockito.Mockito.when;
  * real, which is exactly the part unit tests with mocked repositories can't
  * verify.
  */
+@ActiveProfiles("dev")
 @Testcontainers
 @SpringBootTest
 @Transactional
-class QuestionAnsweringServiceIntegrationTest {
+class QuestionAnsweringServiceIT {
 
     @Container
     @ServiceConnection
@@ -67,13 +72,22 @@ class QuestionAnsweringServiceIntegrationTest {
         // and the response's source list.
         when(embeddingService.embed(contains("password"))).thenReturn(unitVector(0));
         when(embeddingService.embed(contains("Kafka"))).thenReturn(unitVector(1));
+        // Ingestion batches, so embedAll is the call that matters; route each text
+        // through the same fixture vectors the single-text stubs use.
+        when(embeddingService.embedAll(anyList())).thenAnswer(inv -> {
+            List<String> texts = inv.getArgument(0);
+            return texts.stream()
+                    .map(text -> text.toLowerCase().contains("password") ? unitVector(0) : unitVector(1))
+                    .toList();
+        });
+        when(embeddingService.modelName()).thenReturn("text-embedding-3-small");
         when(llmClientService.generate(any(Prompt.class)))
                 .thenReturn("Go to Settings > Security > Reset Password. [1]");
 
         documentIngestionService.ingest("Password Reset Guide", "kb/password.md",
-                "To reset your password, go to Settings > Security > Reset Password.");
+                "To reset your password, go to Settings > Security > Reset Password.", java.util.Map.of());
         documentIngestionService.ingest("Kafka Troubleshooting", "kb/kafka.md",
-                "Restart the Kafka consumer group to fix consumer failures.");
+                "Restart the Kafka consumer group to fix consumer failures.", java.util.Map.of());
 
         AskResponse response = questionAnsweringService.answer("How do I reset my password?");
 

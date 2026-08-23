@@ -1,7 +1,9 @@
 package com.example.aiplatform.ai.prompt;
 
+import com.example.aiplatform.config.TemperatureProperties;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.beans.factory.annotation.Value;
@@ -14,8 +16,23 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Builds every prompt in the application, and - as of the sampling-temperature
+ * fix - decides the {@link ChatOptions} each one carries.
+ *
+ * <p>Attaching options here rather than at the call sites keeps the decision
+ * next to the prompt it belongs to: the planning prompt is deterministic
+ * because of what a planning prompt IS, not because of which service happens
+ * to send it. {@link ChatOptions} is Spring AI's provider-neutral options
+ * type, so this stays free of any OpenAI-specific class, consistent with the
+ * no-provider-lock-in rule the rest of the AI layer follows.
+ */
 @Component
 public class SupportPromptBuilder implements PromptBuilder {
+
+    private final ChatOptions conversationalOptions;
+    private final ChatOptions groundedOptions;
+    private final ChatOptions deterministicOptions;
 
     private final SystemMessage systemMessage;
     private final PromptTemplate userPromptTemplate;
@@ -36,7 +53,11 @@ public class SupportPromptBuilder implements PromptBuilder {
             @Value("classpath:/prompts/tools-system.st") Resource toolsSystemPromptResource,
             @Value("classpath:/prompts/agent-planning-system.st") Resource agentPlanningSystemPromptResource,
             @Value("classpath:/prompts/agent-final-system.st") Resource agentFinalSystemPromptResource,
-            @Value("classpath:/prompts/agent-final-user.st") Resource agentFinalUserPromptResource) {
+            @Value("classpath:/prompts/agent-final-user.st") Resource agentFinalUserPromptResource,
+            TemperatureProperties temperatureProperties) {
+        this.conversationalOptions = temperature(temperatureProperties.conversational());
+        this.groundedOptions = temperature(temperatureProperties.grounded());
+        this.deterministicOptions = temperature(temperatureProperties.deterministic());
         this.systemMessage = new SystemMessage(readResource(systemPromptResource));
         this.userPromptTemplate = new PromptTemplate(userPromptResource);
         this.structuredUserPromptTemplate = new PromptTemplate(structuredUserPromptResource);
@@ -51,14 +72,17 @@ public class SupportPromptBuilder implements PromptBuilder {
     @Override
     public Prompt buildSupportPrompt(String question) {
         Message userMessage = userPromptTemplate.createMessage(Map.of("question", question));
-        return new Prompt(List.of(systemMessage, userMessage));
+        // Open-ended prose with no retrieved context to stay faithful to.
+        return new Prompt(List.of(systemMessage, userMessage), conversationalOptions);
     }
 
     @Override
     public Prompt buildStructuredSupportPrompt(String question, String formatInstructions) {
         Message userMessage = structuredUserPromptTemplate.createMessage(
                 Map.of("question", question, "format", formatInstructions));
-        return new Prompt(List.of(systemMessage, userMessage));
+        // Output is parsed against a schema - creative sampling only produces
+        // parse failures here, never a better answer.
+        return new Prompt(List.of(systemMessage, userMessage), deterministicOptions);
     }
 
     @Override
@@ -67,13 +91,17 @@ public class SupportPromptBuilder implements PromptBuilder {
         // question: {question}" either way. Only the system persona differs
         // (tools-system.st grounds the model in "use a tool, don't guess").
         Message userMessage = userPromptTemplate.createMessage(Map.of("question", question));
-        return new Prompt(List.of(toolsSystemMessage, userMessage));
+        // Answers report what a tool returned; low temperature keeps the model
+        // from embellishing a status or an amount into something friendlier.
+        return new Prompt(List.of(toolsSystemMessage, userMessage), groundedOptions);
     }
 
     @Override
     public Prompt buildRagPrompt(String question, String context) {
         Message userMessage = ragUserPromptTemplate.createMessage(Map.of("question", question, "context", context));
-        return new Prompt(List.of(ragSystemMessage, userMessage));
+        // Every claim must trace to a retrieved excerpt - the least appropriate
+        // place in the application for creative sampling.
+        return new Prompt(List.of(ragSystemMessage, userMessage), groundedOptions);
     }
 
     @Override
@@ -82,14 +110,21 @@ public class SupportPromptBuilder implements PromptBuilder {
         // (support-user-structured.st) - same shape, different system persona.
         Message userMessage = structuredUserPromptTemplate.createMessage(
                 Map.of("question", question, "format", formatInstructions));
-        return new Prompt(List.of(agentPlanningSystemMessage, userMessage));
+        // Emits two booleans. The same question should route the same way every
+        // time; at 0.7 it demonstrably did not.
+        return new Prompt(List.of(agentPlanningSystemMessage, userMessage), deterministicOptions);
     }
 
     @Override
     public Prompt buildAgentFinalPrompt(String question, String evidence) {
         Message userMessage = agentFinalUserPromptTemplate.createMessage(
                 Map.of("question", question, "evidence", evidence));
-        return new Prompt(List.of(agentFinalSystemMessage, userMessage));
+        // Synthesis over gathered evidence - same contract as RAG.
+        return new Prompt(List.of(agentFinalSystemMessage, userMessage), groundedOptions);
+    }
+
+    private static ChatOptions temperature(double value) {
+        return ChatOptions.builder().temperature(value).build();
     }
 
     private static String readResource(Resource resource) {

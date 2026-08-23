@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Postgres/datasource needed just to prove Redis storage is correct).
  */
 @Testcontainers
-class RedisChatMemoryRepositoryTest {
+class RedisChatMemoryRepositoryIT {
 
     @Container
     static GenericContainer<?> redis = new GenericContainer<>(DockerImageName.parse("redis:7-alpine"))

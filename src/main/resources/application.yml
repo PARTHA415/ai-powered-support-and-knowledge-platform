@@ -12,18 +12,30 @@ spring:
         options:
           model: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
     retry:
-      # Phase 16: Spring AI already wraps every OpenAI call in a RetryTemplate
-      # (spring-ai-retry, on the classpath transitively) - this tunes its
-      # defaults (10 attempts, 2s initial backoff, 5x multiplier - which could
-      # keep a single synchronous HTTP request retrying for several MINUTES
-      # before giving up) down to a bounded worst case appropriate for a
-      # request/response API: at most ~7.5s of retrying (500ms + 1s + 2s + 4s)
-      # before the circuit breaker below or the caller gives up instead.
-      max-attempts: 4
+      # Spring AI wraps every OpenAI call in a RetryTemplate (spring-ai-retry,
+      # on the classpath transitively). Its defaults - 10 attempts, 2s initial
+      # backoff, 5x multiplier - can keep one synchronous HTTP request retrying
+      # for MINUTES.
+      #
+      # The worst case is attempts x (connect-timeout + read-timeout) PLUS the
+      # backoff between them. Backoff is only the waiting between attempts; the
+      # attempts themselves are the dominant term and are what an earlier
+      # version of this config overlooked. With the previous 4 attempts against
+      # a 30s read timeout, one LLM call could hold a servlet thread for about
+      # 127 seconds - far past the agent's own 30s bound, and past any sane
+      # client timeout.
+      #
+      # Two attempts against the timeouts under spring.http.client below:
+      #   2 x (5s connect + 20s read) + 0.5s backoff = ~50.5s absolute worst case
+      # That is a real, stated bound. One retry absorbs a brief blip; anything
+      # sustained is the circuit breaker's job, not the retry loop's - the two
+      # are layered deliberately, so making the retry loop patient just delays
+      # the breaker doing its work.
+      max-attempts: 2
       backoff:
         initial-interval: 500ms
         multiplier: 2
-        max-interval: 4000ms
+        max-interval: 2000ms
     chat:
       observations:
         # Never log prompt/completion content - these are potentially
@@ -51,18 +63,33 @@ spring:
       # integration uses. Without this, a hung connection to the LLM provider
       # has no upper bound at all short of the OS-level TCP timeout (often
       # minutes), which would hold a request thread hostage the whole time.
+      #
+      # read-timeout is the per-attempt ceiling, and it multiplies by
+      # spring.ai.retry.max-attempts above - the two have to be chosen
+      # together, not independently. 20s is the trade-off point: these calls
+      # are non-streaming, so the ENTIRE completion must arrive within it, and
+      # a long grounded answer can legitimately take 10-15s. Cutting it much
+      # further would start truncating real answers rather than only killing
+      # hung connections. Genuinely tightening this needs streaming responses,
+      # which is a larger change than a timeout value.
       connect-timeout: ${HTTP_CLIENT_CONNECT_TIMEOUT:5s}
-      read-timeout: ${HTTP_CLIENT_READ_TIMEOUT:30s}
+      read-timeout: ${HTTP_CLIENT_READ_TIMEOUT:20s}
   cache:
+    # Redis-backed, not in-process. A repeat query - the same support question
+    # asked twice, a knowledge-base search re-run - skips a real, billed
+    # embedding call. As a per-instance Caffeine cache that saving decayed with
+    # every replica added: N replicas meant roughly 1/N the hit rate, quietly
+    # restoring the cost the cache existed to remove. Shared in Redis, a vector
+    # any instance has computed is a hit for all of them.
+    #
+    # The TTL still matters and is set below: cached vectors should not outlive
+    # a config change indefinitely. Unbounded growth is no longer a concern the
+    # way it was for an in-heap cache, because every entry expires on its own.
+    type: redis
     cache-names: embeddings
-    caffeine:
-      # Phase 16: repeat identical text (the same support question asked
-      # twice, a knowledge-base search re-run) skips a real, billed OpenAI
-      # embedding call entirely. Bounded size + a TTL, not "cache forever" -
-      # an unbounded cache is a memory leak wearing a performance-feature
-      # costume, and a TTL means a model/config change eventually flushes
-      # stale vectors on its own rather than needing a manual cache-bust.
-      spec: maximumSize=5000,expireAfterWrite=1h
+    redis:
+      time-to-live: ${EMBEDDING_CACHE_TTL:1h}
+      cache-null-values: false
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/ai_platform}
     username: ${DB_USERNAME:ai_platform}
@@ -73,16 +100,52 @@ spring:
       port: ${REDIS_PORT:6379}
   jpa:
     hibernate:
+      # Flyway owns the schema; Hibernate must never alter it. Two tools
+      # writing DDL to the same database is how schemas drift between
+      # environments.
       ddl-auto: none
     open-in-view: false
-  sql:
-    init:
-      mode: always
+  flyway:
+    # Replaces the previous spring.sql.init/schema.sql arrangement, which
+    # re-ran an all-IF-NOT-EXISTS script on every startup. That script could
+    # CREATE but never ALTER: there was no mechanism to add a column, change
+    # an embedding dimension, or backfill - the first real schema change had
+    # nowhere to go. Adopted while the schema is four tables and the migration
+    # is a file move.
+    enabled: true
+    locations: classpath:db/migration
 
 app:
+  ai:
+    temperature:
+      # One global temperature for every call site was wrong. These six call
+      # sites want genuinely different behaviour, and a single knob forced the
+      # most creative setting onto the calls that most needed determinism.
+      #
+      # conversational - open-ended prose (/api/chat). Variation is a feature.
+      # grounded       - answers constrained by retrieved context, tool
+      #                  results, or gathered evidence (RAG, tool calling,
+      #                  agent synthesis). Low but not zero: the model should
+      #                  phrase naturally while sticking to what it was given.
+      # deterministic  - machine-read output where variation is pure downside:
+      #                  the agent planner (emits two booleans) and structured
+      #                  output (must satisfy a schema). At 0.7 the planner
+      #                  picked different capabilities for the same question
+      #                  across runs, and JSON parse failures were more common
+      #                  than they needed to be.
+      #
+      # The evaluation harness runs through the real assistant path, so it
+      # inherits `grounded` rather than being forced to 0 behind the scenes.
+      # That is deliberate: an eval that runs at settings production never
+      # uses is measuring something nobody ships. 0.2 is stable enough for
+      # run-to-run comparison while still being the real configuration.
+      conversational: ${AI_TEMPERATURE_CONVERSATIONAL:0.7}
+      grounded: ${AI_TEMPERATURE_GROUNDED:0.2}
+      deterministic: ${AI_TEMPERATURE_DETERMINISTIC:0.0}
   rag:
     chunk-size: ${RAG_CHUNK_SIZE:800}
     chunk-overlap: ${RAG_CHUNK_OVERLAP:100}
+    embedding-batch-size: ${RAG_EMBEDDING_BATCH_SIZE:32}
     top-k: ${RAG_TOP_K:5}
     similarity-threshold: ${RAG_SIMILARITY_THRESHOLD:0.5}
   agent:
@@ -98,13 +161,20 @@ app:
     demo-client:
       base-url: ${MCP_DEMO_CLIENT_BASE_URL:http://localhost:${server.port}}
   rate-limit:
-    # Per-authenticated-caller (falls back to remote IP if unauthenticated)
+    # Per-authenticated-caller
     # request budget - see RateLimitFilter. Deliberately generous (this is a
     # support tool, not a public API), sized to stop a runaway script or a
     # compromised credential from hammering the (billed, per-call) LLM
     # endpoints, not to shape normal interactive traffic.
     requests-per-window: ${RATE_LIMIT_REQUESTS_PER_WINDOW:30}
     window-seconds: ${RATE_LIMIT_WINDOW_SECONDS:60}
+    # Failed-authentication budget per source IP, enforced BEFORE the security
+    # chain (AuthenticationRateLimitFilter). Counts only failures, so ordinary
+    # traffic never touches it - 10 wrong passwords from one IP in 5 minutes is
+    # already well past human mistyping and nowhere near enough to brute force
+    # anything.
+    max-failed-logins-per-window: ${RATE_LIMIT_MAX_FAILED_LOGINS:10}
+    auth-failure-window-seconds: ${RATE_LIMIT_AUTH_FAILURE_WINDOW_SECONDS:300}
 
 server:
   port: ${SERVER_PORT:8080}
@@ -128,12 +198,23 @@ resilience4j:
         failure-rate-threshold: 50
         wait-duration-in-open-state: 20s
         permitted-number-of-calls-in-half-open-state: 3
-        # A guardrail rejection (Phase 12's token-budget check) is thrown
-        # from inside the same breaker-guarded method but has nothing to do
-        # with the LLM provider's health - without this, a caller repeatedly
-        # sending oversized prompts could trip the breaker for every caller.
+        # These are thrown from inside the breaker-guarded method but say
+        # nothing about the LLM provider's health, so they must not count
+        # toward tripping it. Without this, a caller repeatedly sending
+        # oversized prompts - or repeatedly probing for orders they don't own
+        # - could open the breaker for EVERY caller, turning a guardrail doing
+        # its job into a self-inflicted outage.
+        #
+        # PromptTooLargeException  - the token-budget guardrail rejected an
+        #                            oversized request before any call was made.
+        # UnauthorizedToolAccessException / ToolExecutionLimitExceededException
+        #                          - tool-policy violations, now rethrown out of
+        #                            the tool-calling loop rather than handed
+        #                            back to the model (see ToolExecutionConfig).
         ignore-exceptions:
           - com.example.aiplatform.exception.PromptTooLargeException
+          - com.example.aiplatform.exception.UnauthorizedToolAccessException
+          - com.example.aiplatform.exception.ToolExecutionLimitExceededException
       vectorSearch:
         sliding-window-size: 10
         minimum-number-of-calls: 5
@@ -183,3 +264,30 @@ logging:
     # what makes "REST -> RAG -> Vector DB -> LLM -> Tool -> Response" for
     # ONE request greppable as one story instead of interleaved noise.
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{correlationId}] [%thread] %logger{36} - %msg%n"
+
+---
+# ---------------------------------------------------------------------------
+# dev profile: local development and the integration test suite.
+#
+# Activated with SPRING_PROFILES_ACTIVE=dev (docker-compose sets it for the
+# app service; integration tests set it with @ActiveProfiles("dev")).
+#
+# Its ONLY job is adding db/dev to Flyway's locations, which brings in the
+# repeatable migration seeding the four demo accounts whose password is
+# publicly committed to this repository. Without this profile the app_user
+# table stays empty and nobody can authenticate - which is the intended
+# production default. Security that depends on someone remembering to disable
+# a seed is not security; this inverts it so the unsafe thing has to be
+# switched on deliberately.
+#
+# db/migration is repeated here rather than appended: spring.flyway.locations
+# is a list, and naming a location in a profile REPLACES the base value rather
+# than adding to it. Dropping db/migration here would leave dev with only the
+# demo-account migration and no tables to put them in.
+# ---------------------------------------------------------------------------
+spring:
+  config:
+    activate:
+      on-profile: dev
+  flyway:
+    locations: classpath:db/migration,classpath:db/dev

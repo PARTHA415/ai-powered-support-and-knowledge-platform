@@ -7,6 +7,7 @@ import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpTransportException;
+import org.springframework.test.context.ActiveProfiles;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -42,10 +43,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * static test property - no chicken-and-egg problem of needing the assigned
  * port before the context (and therefore the port) exists.
  */
+@ActiveProfiles("dev")
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT,
         properties = "server.port=18099")
-class McpToolCallIntegrationTest {
+class McpToolCallIT {
 
     @Container
     @ServiceConnection
@@ -101,13 +103,23 @@ class McpToolCallIntegrationTest {
         // scenario SupportToolsTest proves is blocked when the tool is
         // called in-process. Here it's called over a real MCP connection
         // instead, and must be blocked for the identical reason.
+        //
+        // The denial deliberately reads as "no order found" rather than "not
+        // authorized", over MCP exactly as over REST: telling the caller the
+        // order exists but is not theirs is an existence oracle for order-ID
+        // enumeration. The DENY is recorded in the audit log, where the
+        // attacker cannot see it. See SupportTools.requireOwnedByCaller.
         McpSyncClient client = connectAs("bob", "password");
         try {
             McpSchema.CallToolResult result = client.callTool(
                     new McpSchema.CallToolRequest("getOrder", Map.of("orderId", "ORD-1001")));
 
             assertThat(result.isError()).isTrue();
-            assertThat(extractText(result)).containsIgnoringCase("not authorized");
+            assertThat(extractText(result))
+                    .as("the denial must be indistinguishable from a genuine miss")
+                    .containsIgnoringCase("No order found with ID ORD-1001")
+                    .doesNotContainIgnoringCase("not authorized")
+                    .doesNotContain("CUST-1002");
         } finally {
             client.closeGracefully();
         }

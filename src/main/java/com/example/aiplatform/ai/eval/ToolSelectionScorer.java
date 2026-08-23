@@ -52,7 +52,8 @@ public final class ToolSelectionScorer {
                     ? "Expected " + testCase.expectedOutcome() + " but the call succeeded"
                     : contentMatches ? "Tool call succeeded with the expected result"
                     : "Tool call succeeded but result did not contain \"" + testCase.expectedResultContains() + "\"";
-            return new EvaluationCaseResult(testCase.id(), category, expected, actual, passed ? 1.0 : 0.0, passed, reason);
+            return EvaluationCaseResult.instant(testCase.id(), category, expected, actual, passed ? 1.0 : 0.0,
+                    passed, reason);
         } catch (UnauthorizedToolAccessException e) {
             return outcomeResult(testCase, category, expected, "DENIED: " + e.getMessage(),
                     ToolSelectionCase.ExpectedOutcome.DENIED, "Correctly denied by tool-level authorization",
@@ -73,7 +74,7 @@ public final class ToolSelectionScorer {
                                                         ToolSelectionCase.ExpectedOutcome matchingOutcome,
                                                         String passReason, String failReason) {
         boolean passed = testCase.expectedOutcome() == matchingOutcome;
-        return new EvaluationCaseResult(testCase.id(), category, expected, actual, passed ? 1.0 : 0.0, passed,
+        return EvaluationCaseResult.instant(testCase.id(), category, expected, actual, passed ? 1.0 : 0.0, passed,
                 passed ? passReason : failReason);
     }
 

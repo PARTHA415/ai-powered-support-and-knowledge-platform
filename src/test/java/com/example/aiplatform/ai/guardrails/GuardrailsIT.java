@@ -2,6 +2,7 @@ package com.example.aiplatform.ai.guardrails;
 
 import com.example.aiplatform.ai.embedding.EmbeddingService;
 import com.example.aiplatform.ai.llm.LlmClientService;
+import org.springframework.test.context.ActiveProfiles;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -35,10 +36,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * {@link LlmClientService} at all - the block happens before any prompt is
  * even built, exactly as {@link PromptInjectionGuard}'s Javadoc promises.
  */
+@ActiveProfiles("dev")
 @Testcontainers
 @SpringBootTest
 @AutoConfigureMockMvc
-class GuardrailsIntegrationTest {
+class GuardrailsIT {
 
     @Container
     @ServiceConnection

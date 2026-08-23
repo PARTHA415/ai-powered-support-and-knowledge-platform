@@ -2,7 +2,9 @@ package com.example.aiplatform.repository;
 
 import com.example.aiplatform.model.Document;
 import com.example.aiplatform.model.DocumentChunk;
+import com.example.aiplatform.model.RetrievalFilter;
 import com.example.aiplatform.model.SimilarChunk;
+import org.springframework.test.context.ActiveProfiles;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -27,10 +29,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * three tests below (which all write to the same shared container) can't
  * see each other's rows regardless of execution order.
  */
+@ActiveProfiles("dev")
 @Testcontainers
 @SpringBootTest
 @Transactional
-class DocumentChunkEmbeddingRepositoryImplTest {
+class DocumentChunkEmbeddingRepositoryImplIT {
 
     // Must match document_chunk.embedding's fixed dimension in schema.sql (1536,
     // matching Phase 4's text-embedding-3-small) - pgvector rejects mismatched sizes.
@@ -47,6 +50,8 @@ class DocumentChunkEmbeddingRepositoryImplTest {
     @Autowired
     private DocumentChunkRepository documentChunkRepository;
 
+    private static final String MODEL = "text-embedding-3-small";
+
     @Test
     void findNearestOrdersByCosineDistanceClosestFirst() {
         Document document = documentRepository.save(new Document("Password Reset Guide", "kb/password-reset.md"));
@@ -55,10 +60,10 @@ class DocumentChunkEmbeddingRepositoryImplTest {
         DocumentChunk farChunk = documentChunkRepository.save(
                 new DocumentChunk(document, 1, "Our office is located at 123 Main Street."));
 
-        documentChunkRepository.saveEmbedding(closeChunk.getId(), unitVector(0));
-        documentChunkRepository.saveEmbedding(farChunk.getId(), unitVector(2));
+        documentChunkRepository.saveEmbedding(closeChunk.getId(), unitVector(0), MODEL);
+        documentChunkRepository.saveEmbedding(farChunk.getId(), unitVector(2), MODEL);
 
-        List<SimilarChunk> results = documentChunkRepository.findNearest(unitVector(0), 5);
+        List<SimilarChunk> results = documentChunkRepository.findNearest(unitVector(0), 5, MODEL, RetrievalFilter.none());
 
         assertThat(results).hasSize(2);
         assertThat(results.get(0).chunkId()).isEqualTo(closeChunk.getId());
@@ -71,10 +76,10 @@ class DocumentChunkEmbeddingRepositoryImplTest {
         Document document = documentRepository.save(new Document("Limit Test Doc", null));
         for (int i = 0; i < 5; i++) {
             DocumentChunk chunk = documentChunkRepository.save(new DocumentChunk(document, i, "chunk " + i));
-            documentChunkRepository.saveEmbedding(chunk.getId(), unitVector(0));
+            documentChunkRepository.saveEmbedding(chunk.getId(), unitVector(0), MODEL);
         }
 
-        List<SimilarChunk> results = documentChunkRepository.findNearest(unitVector(0), 3);
+        List<SimilarChunk> results = documentChunkRepository.findNearest(unitVector(0), 3, MODEL, RetrievalFilter.none());
 
         assertThat(results).hasSize(3);
     }
@@ -84,7 +89,7 @@ class DocumentChunkEmbeddingRepositoryImplTest {
         Document document = documentRepository.save(new Document("Partial Doc", null));
         documentChunkRepository.save(new DocumentChunk(document, 0, "never embedded"));
 
-        List<SimilarChunk> results = documentChunkRepository.findNearest(unitVector(0), 5);
+        List<SimilarChunk> results = documentChunkRepository.findNearest(unitVector(0), 5, MODEL, RetrievalFilter.none());
 
         assertThat(results).isEmpty();
     }

@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
@@ -50,7 +51,7 @@ class SupportToolsTest {
 
     private final BusinessDataStore businessDataStore = new BusinessDataStore();
     private final SemanticSearchService semanticSearchService = Mockito.mock(SemanticSearchService.class);
-    private final RagProperties ragProperties = new RagProperties(800, 100, 5, 0.5);
+    private final RagProperties ragProperties = new RagProperties(800, 100, 32, 5, 0.5);
     private final PromptInjectionGuard promptInjectionGuard = new PatternBasedPromptInjectionGuard();
     private final SupportTools supportTools =
             new SupportTools(businessDataStore, new ToolExecutionGuard(new GuardrailProperties(20, 6000)),
@@ -249,6 +250,38 @@ class SupportToolsTest {
                 .isInstanceOf(ToolExecutionException.class)
                 .cause()
                 .isInstanceOf(com.example.aiplatform.exception.UnauthorizedToolAccessException.class);
+    }
+
+    /**
+     * The existence oracle must stay closed: a real order the caller does not
+     * own and an order that was never issued have to be indistinguishable from
+     * the outside, or a customer can enumerate the (short, sequential) order-ID
+     * space purely from the difference. The exception TYPE still differs, so
+     * the audit log and metrics can tell a denial from a miss - only the
+     * caller-visible message is identical, and
+     * {@code GlobalExceptionHandler} maps both to 404.
+     */
+    @Test
+    void anUnownedOrderIsIndistinguishableFromAnOrderThatDoesNotExist() {
+        TestPrincipals.authenticateAs(TestPrincipals.customer("CUST-1002"));
+        ToolCallback getOrder = findTool("getOrder");
+
+        // ORD-1001 exists but belongs to CUST-1001; ORD-9999 does not exist.
+        Throwable denied = catchThrowable(() -> getOrder.call("{\"orderId\":\"ORD-1001\"}"));
+        Throwable missing = catchThrowable(() -> getOrder.call("{\"orderId\":\"ORD-9999\"}"));
+
+        assertThat(denied.getCause())
+                .isInstanceOf(com.example.aiplatform.exception.UnauthorizedToolAccessException.class);
+        assertThat(missing.getCause())
+                .isInstanceOf(com.example.aiplatform.exception.ToolResourceNotFoundException.class);
+        // Each message names the ID that was asked for, so they cannot be
+        // compared literally - what must match is the TEMPLATE. Substituting
+        // the requested ID makes the two responses byte-identical, which is
+        // the property an attacker probing IDs would be exploiting if it held
+        // only for one of them.
+        assertThat(denied.getCause().getMessage())
+                .as("a denial must be worded exactly like a genuine miss, revealing nothing about existence")
+                .isEqualTo(missing.getCause().getMessage().replace("ORD-9999", "ORD-1001"));
     }
 
     // --- RBAC: staff roles can act on behalf of any customer ---

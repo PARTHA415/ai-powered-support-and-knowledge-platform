@@ -39,7 +39,7 @@ class EvalControllerTest {
     @Test
     @WithMockUser(roles = "ADMIN")
     void postRunReturnsTheEvaluationReport() throws Exception {
-        EvaluationCaseResult result = new EvaluationCaseResult("case-1", EvaluationCategory.SAFETY_BEHAVIOR,
+        EvaluationCaseResult result = EvaluationCaseResult.instant("case-1", EvaluationCategory.SAFETY_BEHAVIOR,
                 "BLOCKED", "BLOCKED", 1.0, true, "Guardrail decision matched the expected outcome");
         when(aiEvaluationService.runFullEvaluation()).thenReturn(AiEvaluationReport.of(List.of(result)));
 

@@ -1,6 +1,7 @@
 package com.example.aiplatform.ai.rag;
 
 import com.example.aiplatform.ai.embedding.EmbeddingService;
+import com.example.aiplatform.model.RetrievalFilter;
 import com.example.aiplatform.model.SemanticSearchResult;
 import com.example.aiplatform.model.SimilarChunk;
 import com.example.aiplatform.observability.AiPipelineMetrics;
@@ -11,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * The single place every retrieval path in this application goes through -
@@ -39,26 +41,50 @@ public class PgVectorSemanticSearchService implements SemanticSearchService {
     private final EmbeddingService embeddingService;
     private final DocumentChunkRepository documentChunkRepository;
     private final AiPipelineMetrics aiPipelineMetrics;
+    private final KnowledgeBaseAccessPolicy knowledgeBaseAccessPolicy;
 
     public PgVectorSemanticSearchService(EmbeddingService embeddingService,
                                           DocumentChunkRepository documentChunkRepository,
-                                          AiPipelineMetrics aiPipelineMetrics) {
+                                          AiPipelineMetrics aiPipelineMetrics,
+                                          KnowledgeBaseAccessPolicy knowledgeBaseAccessPolicy) {
         this.embeddingService = embeddingService;
         this.documentChunkRepository = documentChunkRepository;
         this.aiPipelineMetrics = aiPipelineMetrics;
+        this.knowledgeBaseAccessPolicy = knowledgeBaseAccessPolicy;
+    }
+
+    @Override
+    public List<SemanticSearchResult> search(String query, int limit) {
+        return search(query, limit, Map.of());
     }
 
     @Override
     @CircuitBreaker(name = "vectorSearch", fallbackMethod = "searchFallback")
-    public List<SemanticSearchResult> search(String query, int limit) {
+    public List<SemanticSearchResult> search(String query, int limit, Map<String, String> metadataFilter) {
         // Embedding generation is deliberately NOT included in the timed
         // block below - Spring AI's own observability already measures
         // embeddingService.embed(...) (gen_ai.client.operation.duration).
         // Timing only findNearest(...) isolates the pgvector query itself.
         float[] queryEmbedding = embeddingService.embed(query);
+        // Scoped to the embedding model currently in use: vectors from a
+        // different model are not comparable, so including them would return
+        // arbitrary results rather than merely worse ones.
+        String embeddingModel = embeddingService.modelName();
+        // The caller's requested filter and the application's policy about
+        // this caller are combined HERE, at the single point every retrieval
+        // path already funnels through, so /api/qa, /api/documents/search, the
+        // agent's knowledge-base step and the MCP-exposed searchKnowledgeBase
+        // tool all inherit the audience restriction without each remembering to
+        // apply it.
+        RetrievalFilter filter = new RetrievalFilter(
+                metadataFilter, knowledgeBaseAccessPolicy.exclusionsForCurrentCaller());
         List<SimilarChunk> nearest = aiPipelineMetrics.timeVectorSearch(
-                () -> documentChunkRepository.findNearest(queryEmbedding, limit));
+                () -> documentChunkRepository.findNearest(queryEmbedding, limit, embeddingModel, filter));
         aiPipelineMetrics.recordRetrievedDocuments(nearest.size());
+        if (nearest.isEmpty()) {
+            log.debug("Vector search returned no chunks for embedding model {} (filter={})",
+                    embeddingModel, metadataFilter);
+        }
         return nearest.stream()
                 .map(chunk -> new SemanticSearchResult(chunk.documentTitle(), chunk.content(), 1 - chunk.distance()))
                 .toList();
@@ -73,7 +99,8 @@ public class PgVectorSemanticSearchService implements SemanticSearchService {
      * down. Graceful degradation reusing an existing code path, not new
      * fallback logic of its own.
      */
-    private List<SemanticSearchResult> searchFallback(String query, int limit, Throwable cause) {
+    private List<SemanticSearchResult> searchFallback(String query, int limit, Map<String, String> metadataFilter,
+                                                       Throwable cause) {
         log.error("Vector search circuit breaker fallback triggered - retrieval is degraded to zero results", cause);
         return List.of();
     }

@@ -1,93 +1,61 @@
 package com.example.aiplatform.security;
 
 import com.example.aiplatform.config.RateLimitProperties;
-import io.github.resilience4j.ratelimiter.RateLimiter;
-import io.github.resilience4j.ratelimiter.RateLimiterConfig;
-import io.github.resilience4j.ratelimiter.RateLimiterRegistry;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.time.Duration;
 
 /**
- * Phase 16: a per-caller request budget. Keyed per-caller, not applied as
- * one global budget, deliberately: a single noisy/compromised account or
- * script should not be able to starve every other caller's share of a
- * shared, billed, per-call LLM budget - a global limiter would let exactly
- * that happen.
+ * A per-caller request budget, keyed per-caller rather than applied as one
+ * global budget: a single noisy or compromised account should not be able to
+ * starve every other caller's share of a shared, billed, per-call LLM budget.
  *
- * Uses Resilience4j's {@link RateLimiterRegistry} - the same library this
- * phase adds for circuit breakers - rather than a hand-rolled counter,
- * specifically for its built-in per-key isolation: {@code registry.rateLimiter(key, config)}
- * creates or reuses one independent limiter per key, so this filter doesn't
- * need to manage its own map of buckets or worry about concurrent access to
- * one.
+ * <p>Now backed by {@link RedisFixedWindowRateLimiter} rather than an
+ * in-process registry, so the budget is shared across replicas instead of
+ * being multiplied by them, and counters expire instead of accumulating
+ * forever.
  *
- * Deliberately given NO explicit {@code @Order} - like {@link com.example.aiplatform.ai.guardrails.GuardrailRequestFilter},
- * that defaults it to run AFTER Spring Security's own filter chain (which
- * runs at a much higher precedence), and that's required here, not just
- * incidental: keying by {@link Authentication#getName()} only works once
- * Spring Security has actually populated the {@link SecurityContextHolder}
- * for this request. Running any earlier (e.g. at
- * {@link org.springframework.core.Ordered#HIGHEST_PRECEDENCE}, where
- * {@link com.example.aiplatform.observability.CorrelationIdFilter} runs
- * deliberately, so a correlation ID exists even for auth failures) would
- * see no authentication yet and silently fall back to IP-based keying for
- * every request, defeating the per-caller design.
+ * <p>Deliberately given NO explicit {@code @Order}, which defaults it to run
+ * AFTER Spring Security's filter chain. That is required, not incidental:
+ * keying by {@link Authentication#getName()} only works once Spring Security
+ * has populated the {@link SecurityContextHolder} for this request.
  *
- * Builds its own {@link RateLimiterRegistry} rather than injecting the
- * auto-configured one Resilience4j's starter provides: limiters here are
- * created dynamically, keyed per-caller, and never reference any of the
- * named instances application.yml configures (there are none for rate
- * limiting - only circuit breakers are configured there), so there's
- * nothing to share with the auto-configured bean. Owning its registry
- * directly also keeps this class self-sufficient in a narrower Spring
- * context that doesn't run Resilience4j's full autoconfiguration - e.g. a
- * {@code @WebMvcTest} slice, which auto-includes this class (a
- * {@code Filter} bean) the same way it does {@code GuardrailRequestFilter}.
- * {@code @EnableConfigurationProperties} covers {@link RateLimitProperties}
- * for the identical reason - see {@link com.example.aiplatform.ai.guardrails.ToolExecutionGuard}
- * for the original version of this pattern (Phase 12).
+ * <p>The consequence is that this filter never sees an unauthenticated request
+ * - the security chain has already answered 401 by then - which is why the
+ * IP-keyed fallback below is effectively unreachable in practice and why
+ * brute-force protection needed a separate filter running BEFORE the security
+ * chain. See {@link AuthenticationRateLimitFilter}.
  */
-@Component
-@EnableConfigurationProperties(RateLimitProperties.class)
 public class RateLimitFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(RateLimitFilter.class);
+    private static final String KEY_PREFIX = "ratelimit:caller:";
 
-    private final RateLimiterRegistry rateLimiterRegistry = RateLimiterRegistry.ofDefaults();
-    private final RateLimiterConfig rateLimiterConfig;
+    private final RedisFixedWindowRateLimiter rateLimiter;
+    private final RateLimitProperties rateLimitProperties;
 
-    public RateLimitFilter(RateLimitProperties rateLimitProperties) {
-        this.rateLimiterConfig = RateLimiterConfig.custom()
-                .limitForPeriod(rateLimitProperties.requestsPerWindow())
-                .limitRefreshPeriod(Duration.ofSeconds(rateLimitProperties.windowSeconds()))
-                // Don't block the request thread waiting for the next
-                // window - either a permit is available now, or the caller
-                // gets a 429 immediately.
-                .timeoutDuration(Duration.ZERO)
-                .build();
+    public RateLimitFilter(RedisFixedWindowRateLimiter rateLimiter, RateLimitProperties rateLimitProperties) {
+        this.rateLimiter = rateLimiter;
+        this.rateLimitProperties = rateLimitProperties;
     }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
-        String key = callerKey(request);
-        RateLimiter rateLimiter = rateLimiterRegistry.rateLimiter("caller:" + key, rateLimiterConfig);
+        String key = KEY_PREFIX + callerKey(request);
 
-        if (!rateLimiter.acquirePermission()) {
-            log.warn("Rate limit exceeded for caller {}", key);
+        if (!rateLimiter.tryAcquire(key, rateLimitProperties.requestsPerWindow(),
+                rateLimitProperties.windowSeconds())) {
+            log.warn("Rate limit exceeded for caller {}", callerKey(request));
             response.setStatus(429);
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             response.getWriter().write(

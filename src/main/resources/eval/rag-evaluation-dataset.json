@@ -1,0 +1,38 @@
+[
+  {
+    "id": "password-reset-direct-match",
+    "question": "How do I reset my password?",
+    "expectedRelevantDocumentTitles": ["Password Reset Guide"],
+    "expectedAnswerKeywords": ["Settings", "Security", "Reset Password"]
+  },
+  {
+    "id": "kafka-consumer-lag",
+    "question": "Why is my Kafka consumer falling behind?",
+    "expectedRelevantDocumentTitles": ["Kafka Consumer Troubleshooting"],
+    "expectedAnswerKeywords": ["consumer lag", "restart"]
+  },
+  {
+    "id": "billing-payment-methods",
+    "question": "What payment methods do you accept?",
+    "expectedRelevantDocumentTitles": ["Billing and Payment FAQ"],
+    "expectedAnswerKeywords": ["credit card", "PayPal"]
+  },
+  {
+    "id": "paraphrased-password-question-lexical-gap",
+    "question": "I forgot my login credentials, what should I do?",
+    "expectedRelevantDocumentTitles": ["Password Reset Guide"],
+    "expectedAnswerKeywords": ["Settings", "Security", "Reset Password"]
+  },
+  {
+    "id": "order-status-ambiguous-overlap",
+    "question": "How do I check the status of my order?",
+    "expectedRelevantDocumentTitles": ["Shipment Tracking Guide"],
+    "expectedAnswerKeywords": ["Track Package", "carrier status"]
+  },
+  {
+    "id": "out-of-knowledge-base-question",
+    "question": "What is the weather forecast for tomorrow?",
+    "expectedRelevantDocumentTitles": [],
+    "expectedAnswerKeywords": []
+  }
+]

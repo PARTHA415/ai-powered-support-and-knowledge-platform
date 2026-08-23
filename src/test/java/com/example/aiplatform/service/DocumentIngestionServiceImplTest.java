@@ -4,25 +4,26 @@ import com.example.aiplatform.ai.embedding.EmbeddingService;
 import com.example.aiplatform.ai.guardrails.PatternBasedPromptInjectionGuard;
 import com.example.aiplatform.ai.guardrails.PromptInjectionGuard;
 import com.example.aiplatform.config.RagProperties;
-import com.example.aiplatform.model.Document;
-import com.example.aiplatform.model.DocumentChunk;
 import com.example.aiplatform.model.IngestDocumentResponse;
-import com.example.aiplatform.repository.DocumentChunkRepository;
-import com.example.aiplatform.repository.DocumentRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.atLeast;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -30,87 +31,140 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class DocumentIngestionServiceImplTest {
 
-    private static final RagProperties DEFAULT_RAG_PROPERTIES = new RagProperties(800, 100, 5, 0.5);
+    private static final RagProperties DEFAULT_RAG_PROPERTIES = new RagProperties(800, 100, 32, 5, 0.5);
+
     private final PromptInjectionGuard promptInjectionGuard = new PatternBasedPromptInjectionGuard();
 
     @Mock
-    private DocumentRepository documentRepository;
-
-    @Mock
-    private DocumentChunkRepository documentChunkRepository;
+    private DocumentPersistence documentPersistence;
 
     @Mock
     private EmbeddingService embeddingService;
 
     @Test
-    void splitsLongContentIntoMultipleChunksAndEmbedsEach() {
-        when(documentRepository.save(any(Document.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(documentChunkRepository.save(any(DocumentChunk.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(embeddingService.embed(anyString())).thenReturn(new float[] {0.1f});
+    void splitsLongContentIntoMultipleChunksAndEmbedsThemAll() {
+        stubPersistence();
+        stubEmbeddings();
 
-        DocumentIngestionServiceImpl service = new DocumentIngestionServiceImpl(
-                documentRepository, documentChunkRepository, embeddingService, DEFAULT_RAG_PROPERTIES, promptInjectionGuard);
+        DocumentIngestionServiceImpl service = newService(DEFAULT_RAG_PROPERTIES);
 
         String longContent = "word ".repeat(400); // ~2000 chars, well past the 800-char chunk size
-        IngestDocumentResponse response = service.ingest("Kafka Troubleshooting", "kb/kafka.md", longContent);
+        IngestDocumentResponse response = service.ingest("Kafka Troubleshooting", "kb/kafka.md", longContent, Map.of());
 
         assertThat(response.title()).isEqualTo("Kafka Troubleshooting");
         assertThat(response.chunkCount()).isGreaterThan(1);
-        verify(embeddingService, times(response.chunkCount())).embed(anyString());
-        verify(documentChunkRepository, times(response.chunkCount())).saveEmbedding(any(), any());
+        assertThat(capturedChunks()).hasSize(response.chunkCount());
     }
 
     @Test
     void shortContentProducesExactlyOneChunk() {
-        when(documentRepository.save(any(Document.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(documentChunkRepository.save(any(DocumentChunk.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(embeddingService.embed(anyString())).thenReturn(new float[] {0.1f});
+        stubPersistence();
+        stubEmbeddings();
 
-        DocumentIngestionServiceImpl service = new DocumentIngestionServiceImpl(
-                documentRepository, documentChunkRepository, embeddingService, DEFAULT_RAG_PROPERTIES, promptInjectionGuard);
-
-        IngestDocumentResponse response = service.ingest("Short Doc", null, "How do I reset my password?");
+        IngestDocumentResponse response = newService(DEFAULT_RAG_PROPERTIES)
+                .ingest("Short Doc", null, "How do I reset my password?", Map.of());
 
         assertThat(response.chunkCount()).isEqualTo(1);
     }
 
+    /**
+     * The regression test for the per-chunk embedding call. Ingestion used to
+     * make one sequential, billed HTTP round trip per chunk - roughly 130 for a
+     * 100 KB document. With a batch size of 10 and 25 chunks this must be three
+     * calls, not twenty-five, and {@code embed(String)} - the single-text,
+     * cached path meant for queries - must not be used at all.
+     */
+    @Test
+    void embedsInBatchesRatherThanOneCallPerChunk() {
+        stubPersistence();
+        stubEmbeddings();
+
+        // 50-char chunks over ~1250 chars of content gives ~25 chunks.
+        RagProperties smallBatches = new RagProperties(50, 0, 10, 5, 0.5);
+        DocumentIngestionServiceImpl service = newService(smallBatches);
+
+        IngestDocumentResponse response = service.ingest("Batched", null, uniqueWordContent(200), Map.of());
+
+        int expectedBatches = (int) Math.ceil(response.chunkCount() / 10.0);
+        verify(embeddingService, times(expectedBatches)).embedAll(anyList());
+        verify(embeddingService, never()).embed(anyString());
+        assertThat(expectedBatches).isLessThan(response.chunkCount());
+    }
+
+    @Test
+    void recordsTheEmbeddingModelAlongsideEveryStoredVector() {
+        stubPersistence();
+        stubEmbeddings();
+
+        newService(DEFAULT_RAG_PROPERTIES).ingest("Model Tracked", null, "short content", Map.of());
+
+        verify(documentPersistence).saveEmbeddings(anyList(), anyList(), eq("text-embedding-3-small"));
+    }
+
+    @Test
+    void metadataIsPassedThroughToPersistence() {
+        stubPersistence();
+        stubEmbeddings();
+
+        Map<String, String> metadata = Map.of("product", "kafka", "audience", "internal");
+        newService(DEFAULT_RAG_PROPERTIES).ingest("Runbook", null, "content", metadata);
+
+        verify(documentPersistence).saveDocumentAndChunks(eq("Runbook"), eq(null), eq(metadata), anyList());
+    }
+
     @Test
     void configuredOverlapCausesConsecutiveChunksToShareWords() {
-        when(documentRepository.save(any(Document.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(documentChunkRepository.save(any(DocumentChunk.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(embeddingService.embed(anyString())).thenReturn(new float[] {0.1f});
+        stubPersistence();
+        stubEmbeddings();
 
-        RagProperties withOverlap = new RagProperties(50, 20, 5, 0.5);
-        DocumentIngestionServiceImpl service = new DocumentIngestionServiceImpl(
-                documentRepository, documentChunkRepository, embeddingService, withOverlap, promptInjectionGuard);
+        newService(new RagProperties(50, 20, 32, 5, 0.5))
+                .ingest("Overlap Test", null, uniqueWordContent(80), Map.of());
 
-        List<String> chunks = ingestAndCaptureChunkTexts(service, uniqueWordContent(80));
-
+        List<String> chunks = capturedChunks();
         assertThat(chunks.size()).isGreaterThan(2);
         assertThat(sharedWords(chunks.get(0), chunks.get(1))).isNotEmpty();
     }
 
     @Test
     void zeroOverlapProducesNoSharedWordsBetweenConsecutiveChunks() {
-        when(documentRepository.save(any(Document.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(documentChunkRepository.save(any(DocumentChunk.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        when(embeddingService.embed(anyString())).thenReturn(new float[] {0.1f});
+        stubPersistence();
+        stubEmbeddings();
 
-        RagProperties noOverlap = new RagProperties(50, 0, 5, 0.5);
-        DocumentIngestionServiceImpl service = new DocumentIngestionServiceImpl(
-                documentRepository, documentChunkRepository, embeddingService, noOverlap, promptInjectionGuard);
+        newService(new RagProperties(50, 0, 32, 5, 0.5))
+                .ingest("Overlap Test", null, uniqueWordContent(80), Map.of());
 
-        List<String> chunks = ingestAndCaptureChunkTexts(service, uniqueWordContent(80));
-
+        List<String> chunks = capturedChunks();
         assertThat(chunks.size()).isGreaterThan(2);
         assertThat(sharedWords(chunks.get(0), chunks.get(1))).isEmpty();
     }
 
-    private List<String> ingestAndCaptureChunkTexts(DocumentIngestionServiceImpl service, String content) {
-        ArgumentCaptor<DocumentChunk> captor = ArgumentCaptor.forClass(DocumentChunk.class);
-        service.ingest("Overlap Test", null, content);
-        verify(documentChunkRepository, atLeast(2)).save(captor.capture());
-        return captor.getAllValues().stream().map(DocumentChunk::getContent).toList();
+    private DocumentIngestionServiceImpl newService(RagProperties ragProperties) {
+        return new DocumentIngestionServiceImpl(
+                documentPersistence, embeddingService, ragProperties, promptInjectionGuard);
+    }
+
+    private void stubPersistence() {
+        when(documentPersistence.saveDocumentAndChunks(anyString(), any(), any(), anyList()))
+                .thenAnswer(invocation -> {
+                    List<String> chunks = invocation.getArgument(3);
+                    List<Long> ids = IntStream.range(0, chunks.size()).mapToObj(Long::valueOf).toList();
+                    return new DocumentPersistence.StoredDocument(1L, invocation.getArgument(0), ids);
+                });
+    }
+
+    private void stubEmbeddings() {
+        when(embeddingService.modelName()).thenReturn("text-embedding-3-small");
+        when(embeddingService.embedAll(anyList())).thenAnswer(invocation -> {
+            List<String> batch = invocation.getArgument(0);
+            return batch.stream().map(text -> new float[] {0.1f}).toList();
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> capturedChunks() {
+        ArgumentCaptor<List<String>> captor = ArgumentCaptor.forClass(List.class);
+        verify(documentPersistence).saveDocumentAndChunks(anyString(), any(), any(), captor.capture());
+        return captor.getValue();
     }
 
     private static String uniqueWordContent(int wordCount) {
@@ -118,12 +172,13 @@ class DocumentIngestionServiceImplTest {
         for (int i = 0; i < wordCount; i++) {
             content.append("token").append(i).append(' ');
         }
-        return content.toString();
+        return content.toString().strip();
     }
 
     private static Set<String> sharedWords(String first, String second) {
-        Set<String> firstWords = Set.of(first.split("\\s+"));
-        Set<String> secondWords = Set.of(second.split("\\s+"));
-        return firstWords.stream().filter(secondWords::contains).collect(Collectors.toSet());
+        Set<String> firstWords = new HashSet<>(Arrays.asList(first.split("\\s+")));
+        Set<String> secondWords = new HashSet<>(Arrays.asList(second.split("\\s+")));
+        firstWords.retainAll(secondWords);
+        return firstWords;
     }
 }

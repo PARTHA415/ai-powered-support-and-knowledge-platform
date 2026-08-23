@@ -33,12 +33,14 @@ public class DocumentController {
     @PostMapping
     public ResponseEntity<IngestDocumentResponse> ingest(@Valid @RequestBody IngestDocumentRequest request) {
         return ResponseEntity.ok(
-                documentIngestionService.ingest(request.title(), request.source(), request.content()));
+                documentIngestionService.ingest(request.title(), request.source(), request.content(),
+                        request.effectiveMetadata()));
     }
 
     @Operation(summary = "Semantic search over ingested document chunks (no LLM answer synthesis - that's Phase 6)")
     @PostMapping("/search")
     public ResponseEntity<List<SemanticSearchResult>> search(@Valid @RequestBody SemanticSearchRequest request) {
-        return ResponseEntity.ok(semanticSearchService.search(request.query(), request.effectiveLimit()));
+        return ResponseEntity.ok(semanticSearchService.search(request.query(), request.effectiveLimit(),
+                request.effectiveMetadataFilter()));
     }
 }

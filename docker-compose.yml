@@ -24,6 +24,13 @@ services:
       # review - see the docs for the AWS Secrets Manager equivalent).
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      # The demo accounts (alice/bob/carol/dave, password "password") are
+      # seeded ONLY under the dev profile - see data-dev.sql. This compose
+      # file IS the local development environment, so it opts in by default;
+      # a real deployment does not set this, gets an empty app_user table,
+      # and provisions its own accounts. Override with SPRING_PROFILES_ACTIVE
+      # to run this stack without the demo logins.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
     depends_on:
       postgres:
         condition: service_healthy

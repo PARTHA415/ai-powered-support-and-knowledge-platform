@@ -17,6 +17,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.when;
@@ -47,7 +48,7 @@ class DocumentControllerTest {
     @WithMockUser(roles = "SUPPORT_AGENT")
     void postDocumentsIngestsAndReturnsSummary() throws Exception {
         when(documentIngestionService.ingest(
-                eq("Kafka Troubleshooting"), eq("kb/kafka.md"), eq("Restart the consumer group.")))
+                eq("Kafka Troubleshooting"), eq("kb/kafka.md"), eq("Restart the consumer group."), any()))
                 .thenReturn(new IngestDocumentResponse(1L, "Kafka Troubleshooting", 1));
 
         mockMvc.perform(post("/api/documents")
@@ -62,7 +63,7 @@ class DocumentControllerTest {
     @Test
     @WithMockUser(roles = "ADMIN")
     void postDocumentsAsAdminIsAllowed() throws Exception {
-        when(documentIngestionService.ingest(eq("Doc"), isNull(), eq("content")))
+        when(documentIngestionService.ingest(eq("Doc"), isNull(), eq("content"), any()))
                 .thenReturn(new IngestDocumentResponse(2L, "Doc", 1));
 
         mockMvc.perform(post("/api/documents")
@@ -103,7 +104,7 @@ class DocumentControllerTest {
     @Test
     @WithMockUser(roles = "USER")
     void postDocumentsSearchReturnsResultsFromService() throws Exception {
-        when(semanticSearchService.search(eq("How do I reset my password?"), eq(5)))
+        when(semanticSearchService.search(eq("How do I reset my password?"), eq(5), eq(java.util.Map.of())))
                 .thenReturn(List.of(new SemanticSearchResult(
                         "Password Reset Guide", "Go to Settings > Security > Reset Password.", 0.92)));
 
@@ -113,6 +114,35 @@ class DocumentControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].documentTitle").value("Password Reset Guide"))
                 .andExpect(jsonPath("$[0].similarity").value(0.92));
+    }
+
+    @Test
+    @WithMockUser(roles = "USER")
+    void postDocumentsSearchPassesTheMetadataFilterThroughToRetrieval() throws Exception {
+        java.util.Map<String, String> filter = java.util.Map.of("product", "kafka");
+        when(semanticSearchService.search(eq("consumer lag"), eq(5), eq(filter)))
+                .thenReturn(List.of(new SemanticSearchResult("Kafka Guide", "Check consumer lag.", 0.81)));
+
+        mockMvc.perform(post("/api/documents/search")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"query\":\"consumer lag\",\"metadataFilter\":{\"product\":\"kafka\"}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].documentTitle").value("Kafka Guide"));
+    }
+
+    @Test
+    @WithMockUser(roles = "SUPPORT_AGENT")
+    void postDocumentsPassesMetadataThroughToIngestion() throws Exception {
+        when(documentIngestionService.ingest(eq("Runbook"), isNull(), eq("content"),
+                eq(java.util.Map.of("audience", "internal"))))
+                .thenReturn(new IngestDocumentResponse(3L, "Runbook", 1));
+
+        mockMvc.perform(post("/api/documents")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"Runbook\",\"content\":\"content\","
+                                + "\"metadata\":{\"audience\":\"internal\"}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.documentId").value(3));
     }
 
     @Test

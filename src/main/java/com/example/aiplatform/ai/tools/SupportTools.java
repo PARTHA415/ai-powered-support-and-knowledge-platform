@@ -82,8 +82,8 @@ public class SupportTools {
         toolExecutionGuard.recordInvocation("getOrder");
         validateOrderId(orderId);
         Order order = businessDataStore.findOrder(orderId)
-                .orElseThrow(() -> new ToolResourceNotFoundException("No order found with ID " + orderId));
-        requireOwnedByCaller(order.customerId(), "order " + orderId);
+                .orElseThrow(() -> new ToolResourceNotFoundException(orderNotFoundMessage(orderId)));
+        requireOwnedByCaller(order.customerId(), "order " + orderId, orderNotFoundMessage(orderId));
         log.debug("getOrder({}) -> {}", orderId, order.status());
         return order;
     }
@@ -94,8 +94,8 @@ public class SupportTools {
         toolExecutionGuard.recordInvocation("getPaymentStatus");
         validateOrderId(orderId);
         Order order = businessDataStore.findOrder(orderId)
-                .orElseThrow(() -> new ToolResourceNotFoundException("No order found with ID " + orderId));
-        requireOwnedByCaller(order.customerId(), "order " + orderId);
+                .orElseThrow(() -> new ToolResourceNotFoundException(orderNotFoundMessage(orderId)));
+        requireOwnedByCaller(order.customerId(), "order " + orderId, orderNotFoundMessage(orderId));
         PaymentStatus paymentStatus = businessDataStore.findPaymentStatus(orderId)
                 .orElseThrow(() -> new ToolResourceNotFoundException("No payment record found for order " + orderId));
         log.debug("getPaymentStatus({}) -> {}", orderId, paymentStatus.status());
@@ -108,8 +108,8 @@ public class SupportTools {
         toolExecutionGuard.recordInvocation("getShipmentStatus");
         validateOrderId(orderId);
         Order order = businessDataStore.findOrder(orderId)
-                .orElseThrow(() -> new ToolResourceNotFoundException("No order found with ID " + orderId));
-        requireOwnedByCaller(order.customerId(), "order " + orderId);
+                .orElseThrow(() -> new ToolResourceNotFoundException(orderNotFoundMessage(orderId)));
+        requireOwnedByCaller(order.customerId(), "order " + orderId, orderNotFoundMessage(orderId));
         ShipmentStatus shipmentStatus = businessDataStore.findShipmentStatus(orderId)
                 .orElseThrow(() -> new ToolResourceNotFoundException("No shipment found for order " + orderId));
         log.debug("getShipmentStatus({}) -> {}", orderId, shipmentStatus.status());
@@ -121,9 +121,9 @@ public class SupportTools {
             @ToolParam(description = "The customer ID, formatted like CUST-1001") String customerId) {
         toolExecutionGuard.recordInvocation("getCustomer");
         validateCustomerId(customerId);
-        requireOwnedByCaller(customerId, "customer profile " + customerId);
+        requireOwnedByCaller(customerId, "customer profile " + customerId, customerNotFoundMessage(customerId));
         Customer customer = businessDataStore.findCustomer(customerId)
-                .orElseThrow(() -> new ToolResourceNotFoundException("No customer found with ID " + customerId));
+                .orElseThrow(() -> new ToolResourceNotFoundException(customerNotFoundMessage(customerId)));
         log.debug("getCustomer({}) -> {}", customerId, customer.tier());
         return customer;
     }
@@ -166,6 +166,22 @@ public class SupportTools {
         return sanitized;
     }
 
+    /**
+     * The single definition of "no such order", used both for a genuine miss
+     * and for an ownership denial. They must stay byte-identical or the
+     * existence oracle {@link #requireOwnedByCaller} closes reopens - two
+     * separately-maintained string literals would drift apart eventually, so
+     * there is only one.
+     */
+    private static String orderNotFoundMessage(String orderId) {
+        return "No order found with ID " + orderId;
+    }
+
+    /** Counterpart to {@link #orderNotFoundMessage} for customer lookups. */
+    private static String customerNotFoundMessage(String customerId) {
+        return "No customer found with ID " + customerId;
+    }
+
     private static void validateOrderId(String orderId) {
         if (orderId == null || !ORDER_ID_PATTERN.matcher(orderId).matches()) {
             throw new InvalidToolArgumentException(
@@ -187,7 +203,35 @@ public class SupportTools {
         }
     }
 
-    private static void requireOwnedByCaller(String ownerCustomerId, String resourceDescription) {
+    /**
+     * Enforces per-resource ownership, and does it without telling the caller
+     * whether the resource exists.
+     *
+     * <p>{@code notFoundMessage} is deliberately identical to the message a
+     * genuine miss produces, and {@link UnauthorizedToolAccessException} is
+     * deliberately mapped to 404 rather than 403 (see
+     * {@link com.example.aiplatform.exception.GlobalExceptionHandler}).
+     * Distinguishing "this order does not exist" from "this order exists but
+     * is not yours" is an existence oracle: a customer could walk the order-ID
+     * space and learn exactly which IDs are real from the status code alone.
+     * Order IDs are short and sequential, so that is a practical enumeration,
+     * not a theoretical one. Answering identically in both cases is the same
+     * reason a private repository on a code-hosting site 404s rather than
+     * 403s for someone without access.
+     *
+     * <p>The distinction is not lost, it is only moved somewhere the attacker
+     * cannot see: {@link AuditLogger} records a DENY with the real caller and
+     * the real resource, and the exception type stays distinct so denials
+     * remain separable in logs and metrics from ordinary misses.
+     *
+     * <p>The null check on the caller's customer ID is a fail-closed default,
+     * not defensive noise. The schema permits a USER row with a NULL
+     * customer_id, and the previous {@code callerCustomerId.equals(...)} threw
+     * a NullPointerException for such an account - surfacing as a 500 from a
+     * code path whose entire job is to produce a clean denial.
+     */
+    private static void requireOwnedByCaller(String ownerCustomerId, String resourceDescription,
+                                              String notFoundMessage) {
         Role callerRole = CurrentUser.role();
         if (callerRole == Role.SUPPORT_AGENT || callerRole == Role.ADMIN) {
             // Staff can act on behalf of any customer - this is a role check,
@@ -197,10 +241,10 @@ public class SupportTools {
             return;
         }
         String callerCustomerId = CurrentUser.customerId();
-        if (!callerCustomerId.equals(ownerCustomerId)) {
-            AuditLogger.logToolAccess(resourceDescription, false, callerCustomerId);
-            throw new UnauthorizedToolAccessException(
-                    "Caller " + callerCustomerId + " is not authorized to access " + resourceDescription);
+        if (callerCustomerId == null || !callerCustomerId.equals(ownerCustomerId)) {
+            AuditLogger.logToolAccess(resourceDescription, false,
+                    callerCustomerId == null ? "user-without-customer-id" : callerCustomerId);
+            throw new UnauthorizedToolAccessException(notFoundMessage);
         }
         AuditLogger.logToolAccess(resourceDescription, true, callerCustomerId);
     }

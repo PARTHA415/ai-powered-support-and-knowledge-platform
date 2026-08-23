@@ -14,6 +14,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -29,12 +32,14 @@ class PgVectorSemanticSearchServiceTest {
     void searchEmbedsQueryAndConvertsDistanceToSimilarity() {
         float[] queryVector = {0.1f, 0.2f, 0.3f};
         when(embeddingService.embed("How do I reset my password?")).thenReturn(queryVector);
-        when(documentChunkRepository.findNearest(queryVector, 5)).thenReturn(List.of(
+        when(embeddingService.modelName()).thenReturn("text-embedding-3-small");
+        when(documentChunkRepository.findNearest(eq(queryVector), eq(5), anyString(), any())).thenReturn(List.of(
                 new SimilarChunk(1L, 10L, "Password Reset Guide", "Go to Settings > Security > Reset Password.", 0.1)));
 
         AiPipelineMetrics aiPipelineMetrics = new AiPipelineMetrics(new SimpleMeterRegistry());
         PgVectorSemanticSearchService service =
-                new PgVectorSemanticSearchService(embeddingService, documentChunkRepository, aiPipelineMetrics);
+                new PgVectorSemanticSearchService(embeddingService, documentChunkRepository, aiPipelineMetrics,
+                        new KnowledgeBaseAccessPolicy());
 
         List<SemanticSearchResult> results = service.search("How do I reset my password?", 5);
 
@@ -51,12 +56,14 @@ class PgVectorSemanticSearchServiceTest {
         AiPipelineMetrics aiPipelineMetrics = new AiPipelineMetrics(meterRegistry);
         float[] queryVector = {0.1f, 0.2f, 0.3f};
         when(embeddingService.embed("kafka consumer failures")).thenReturn(queryVector);
-        when(documentChunkRepository.findNearest(queryVector, 5)).thenReturn(List.of(
+        when(embeddingService.modelName()).thenReturn("text-embedding-3-small");
+        when(documentChunkRepository.findNearest(eq(queryVector), eq(5), anyString(), any())).thenReturn(List.of(
                 new SimilarChunk(1L, 10L, "Kafka Guide", "Restart the consumer group.", 0.2),
                 new SimilarChunk(2L, 11L, "Kafka Guide", "Check offset commits.", 0.3)));
 
         PgVectorSemanticSearchService service =
-                new PgVectorSemanticSearchService(embeddingService, documentChunkRepository, aiPipelineMetrics);
+                new PgVectorSemanticSearchService(embeddingService, documentChunkRepository, aiPipelineMetrics,
+                        new KnowledgeBaseAccessPolicy());
 
         service.search("kafka consumer failures", 5);
 

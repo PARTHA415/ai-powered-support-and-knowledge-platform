@@ -6,6 +6,7 @@ import com.example.aiplatform.service.DocumentIngestionService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeAll;
+import org.springframework.test.context.ActiveProfiles;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
@@ -63,6 +65,7 @@ import static org.mockito.Mockito.when;
  * periodically running the same dataset against the real embedding model
  * and LLM to measure actual production RAG quality.
  */
+@ActiveProfiles("dev")
 @Testcontainers
 @SpringBootTest
 @TestPropertySource(properties = {
@@ -70,9 +73,9 @@ import static org.mockito.Mockito.when;
         "app.rag.similarity-threshold=0.1"
 })
 @Transactional
-class RagEvaluationTest {
+class RagEvaluationIT {
 
-    private static final Logger log = LoggerFactory.getLogger(RagEvaluationTest.class);
+    private static final Logger log = LoggerFactory.getLogger(RagEvaluationIT.class);
     private static final int EMBEDDING_DIMENSIONS = 1536;
 
     @Container
@@ -113,7 +116,7 @@ class RagEvaluationTest {
                 new TypeReference<List<FixtureDocument>>() {
                 });
         for (FixtureDocument document : fixtureDocuments) {
-            documentIngestionService.ingest(document.title(), document.source(), document.content());
+            documentIngestionService.ingest(document.title(), document.source(), document.content(), java.util.Map.of());
         }
     }
 
@@ -128,6 +131,14 @@ class RagEvaluationTest {
     @Test
     void evaluatesDatasetAndCatchesBothGoodAndBadCases() throws IOException {
         when(embeddingService.embed(anyString())).thenAnswer(invocation -> hashEmbedding(invocation.getArgument(0)));
+        // Ingestion batches now, so embedAll - not embed - is what the pipeline
+        // actually calls. Delegates to the same hash embedding so retrieval
+        // behaves identically either way.
+        when(embeddingService.embedAll(anyList())).thenAnswer(invocation -> {
+            List<String> texts = invocation.getArgument(0);
+            return texts.stream().map(RagEvaluationIT::hashEmbedding).toList();
+        });
+        when(embeddingService.modelName()).thenReturn("test-hash-embedding");
 
         Map<String, String> cannedAnswers = new HashMap<>();
         cannedAnswers.put("How do I reset my password?",

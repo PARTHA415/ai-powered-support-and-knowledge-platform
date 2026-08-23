@@ -4,7 +4,9 @@ import com.example.aiplatform.ai.guardrails.SensitiveDataGuard;
 import com.example.aiplatform.config.GuardrailProperties;
 import com.example.aiplatform.exception.LlmIntegrationException;
 import com.example.aiplatform.exception.PromptTooLargeException;
+import com.example.aiplatform.exception.ToolPolicyExceptions;
 import com.example.aiplatform.observability.AiPipelineMetrics;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,8 +68,7 @@ public class SpringAiLlmClientService implements LlmClientService {
             log.debug("Received LLM response ({} chars)", response == null ? 0 : response.length());
             return sensitiveDataGuard.sanitizeOutput(response);
         } catch (Exception e) {
-            log.error("LLM call failed", e);
-            throw new LlmIntegrationException("Failed to get a response from the LLM", e);
+            throw asLlmFailure(e, "LLM call failed");
         }
     }
 
@@ -85,8 +86,7 @@ public class SpringAiLlmClientService implements LlmClientService {
             log.debug("Received LLM response ({} chars)", response == null ? 0 : response.length());
             return sensitiveDataGuard.sanitizeOutput(response);
         } catch (Exception e) {
-            log.error("LLM call with tools failed", e);
-            throw new LlmIntegrationException("Failed to get a response from the LLM", e);
+            throw asLlmFailure(e, "LLM call with tools failed");
         }
     }
 
@@ -104,8 +104,7 @@ public class SpringAiLlmClientService implements LlmClientService {
             log.debug("Received LLM response ({} chars)", response == null ? 0 : response.length());
             return sensitiveDataGuard.sanitizeOutput(response);
         } catch (Exception e) {
-            log.error("LLM call with tool callback provider failed", e);
-            throw new LlmIntegrationException("Failed to get a response from the LLM", e);
+            throw asLlmFailure(e, "LLM call with tool callback provider failed");
         }
     }
 
@@ -135,11 +134,79 @@ public class SpringAiLlmClientService implements LlmClientService {
         return circuitOpenFallback(cause);
     }
 
+    /**
+     * Resilience4j's {@code fallbackMethod} is invoked for EVERY exception
+     * leaving the annotated method, not only for a rejected call - and since
+     * these fallbacks declare a plain {@link Throwable} parameter, they match
+     * everything. Rewriting all of it as "the provider is down" would be
+     * wrong, and in two cases actively misleading:
+     *
+     * <ul>
+     *   <li>{@link PromptTooLargeException} from {@code assertWithinTokenBudget}
+     *       is a guardrail rejecting an oversized request. It maps to 413, and
+     *       the {@code ignore-exceptions} entry in application.yml already
+     *       keeps it from counting against the breaker - but without the check
+     *       below it never reached its handler anyway, arriving at the caller
+     *       as a 502 claiming the AI service was unavailable.</li>
+     *   <li>A tool-policy violation ({@link ToolPolicyExceptions#RETHROWN}) is
+     *       this application's own decision about its own data. Reporting an
+     *       authorization denial as a provider outage would be a lie to the
+     *       caller and a false alarm to whoever is on call.</li>
+     * </ul>
+     *
+     * <p>So only {@link CallNotPermittedException} - thrown when the breaker
+     * is genuinely OPEN and refused the call - produces the unavailable
+     * message. Everything else already carries its own meaning and is
+     * propagated unchanged.
+     */
     private String circuitOpenFallback(Throwable cause) {
-        log.error("LLM circuit breaker fallback triggered - the provider appears to be down", cause);
-        throw new LlmIntegrationException(
-                "The AI service is temporarily unavailable and is being given time to recover "
-                        + "(circuit breaker open) - please try again shortly.", cause);
+        if (cause instanceof CallNotPermittedException) {
+            log.error("LLM circuit breaker is OPEN - failing fast while the provider recovers", cause);
+            throw new LlmIntegrationException(
+                    "The AI service is temporarily unavailable and is being given time to recover "
+                            + "(circuit breaker open) - please try again shortly.", cause);
+        }
+        if (cause instanceof RuntimeException runtimeException) {
+            throw runtimeException;
+        }
+        throw new LlmIntegrationException("Failed to get a response from the LLM", cause);
+    }
+
+    /**
+     * Turns a failure from the provider call into the right exception - with
+     * one deliberate exemption.
+     *
+     * <p>A tool-policy violation ({@link ToolPolicyExceptions#RETHROWN}) can
+     * now propagate out of the tool-calling loop, because
+     * {@link com.example.aiplatform.config.ToolExecutionConfig} configures
+     * Spring AI to rethrow those instead of feeding them back to the model.
+     * They arrive here as ordinary exceptions from
+     * {@code chatClient.prompt(...).call()}, and blanket-wrapping them as
+     * {@link LlmIntegrationException} would undo the rethrow entirely: an
+     * authorization denial or an exceeded tool-call budget would surface as a
+     * 502 Bad Gateway blaming the LLM provider for a decision this
+     * application made about its own data. They are re-thrown unchanged so
+     * {@code GlobalExceptionHandler} maps them to their real status.
+     *
+     * <p>Checked against the whole cause chain rather than the top-level type,
+     * since a provider integration may wrap what a tool threw before it gets
+     * back here.
+     *
+     * <p>Everything else is a genuine provider failure and is logged and
+     * wrapped as before. Declared as returning the exception so call sites
+     * read {@code throw asLlmFailure(...)}, which makes it obvious to the
+     * compiler and the reader that control does not continue.
+     */
+    private static RuntimeException asLlmFailure(Exception e, String logMessage) {
+        if (ToolPolicyExceptions.isPolicyViolation(e)) {
+            log.warn("{} - propagating a tool-policy violation rather than wrapping it as a provider failure",
+                    logMessage);
+            if (e instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+        }
+        log.error(logMessage, e);
+        return new LlmIntegrationException("Failed to get a response from the LLM", e);
     }
 
     /**

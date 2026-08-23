@@ -41,10 +41,31 @@ public class GlobalExceptionHandler {
                 .body(ErrorResponse.of(HttpStatus.NOT_FOUND.value(), "Not Found", ex.getMessage()));
     }
 
+    /**
+     * Mapped to 404, not the 403 the exception's name suggests, and that is
+     * the whole point rather than an inconsistency.
+     *
+     * <p>A 403 here would tell a caller "this resource exists, but is not
+     * yours" - an existence oracle that turns the short, sequential order-ID
+     * space into something a customer can enumerate purely from status codes.
+     * The response is therefore byte-identical to a genuine miss: same status,
+     * same message (see {@code SupportTools.orderNotFoundMessage}). The same
+     * reasoning makes a code-hosting site 404 a private repository rather than
+     * 403 it.
+     *
+     * <p>The denial is not hidden from US, only from the caller: the distinct
+     * exception type survives in logs and metrics, and {@code AuditLogger} has
+     * already recorded a DENY line naming the real caller and the real
+     * resource. This handler is reachable at all only because
+     * {@code ToolExecutionConfig} rethrows this exception out of the
+     * tool-calling loop instead of handing its text to the model.
+     */
     @ExceptionHandler(UnauthorizedToolAccessException.class)
     public ResponseEntity<ErrorResponse> handleUnauthorizedToolAccess(UnauthorizedToolAccessException ex) {
-        return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                .body(ErrorResponse.of(HttpStatus.FORBIDDEN.value(), "Forbidden", ex.getMessage()));
+        log.warn("Denied tool access to a resource the caller does not own; "
+                + "responding as Not Found to avoid confirming the resource exists");
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ErrorResponse.of(HttpStatus.NOT_FOUND.value(), "Not Found", ex.getMessage()));
     }
 
     @ExceptionHandler(PromptInjectionException.class)

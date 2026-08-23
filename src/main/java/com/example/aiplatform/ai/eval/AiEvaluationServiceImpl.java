@@ -27,16 +27,21 @@ public class AiEvaluationServiceImpl implements AiEvaluationService {
 
     private static final Logger log = LoggerFactory.getLogger(AiEvaluationServiceImpl.class);
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     private final SupportAssistantService supportAssistantService;
     private final PromptInjectionGuard promptInjectionGuard;
     private final RagEvaluator ragEvaluator;
+    private final EvaluationReportStore reportStore;
 
     public AiEvaluationServiceImpl(SupportAssistantService supportAssistantService,
                                     PromptInjectionGuard promptInjectionGuard,
-                                    RagEvaluator ragEvaluator) {
+                                    RagEvaluator ragEvaluator,
+                                    EvaluationReportStore reportStore) {
         this.supportAssistantService = supportAssistantService;
         this.promptInjectionGuard = promptInjectionGuard;
         this.ragEvaluator = ragEvaluator;
+        this.reportStore = reportStore;
     }
 
     @Override
@@ -47,18 +52,20 @@ public class AiEvaluationServiceImpl implements AiEvaluationService {
     private EvaluationCaseResult evaluateAnswerCorrectness(AnswerCorrectnessCase testCase) {
         String expected = "contains " + testCase.requiredFacts() + "; excludes " + testCase.forbiddenFacts();
         String answer;
+        long startNanos = System.nanoTime();
         try {
             answer = supportAssistantService.assist(testCase.question()).answer();
         } catch (LlmIntegrationException e) {
             return new EvaluationCaseResult(testCase.id(), EvaluationCategory.ANSWER_CORRECTNESS, expected,
-                    "ERROR: " + e.getMessage(), 0.0, false, "Answer generation failed");
+                    "ERROR: " + e.getMessage(), 0.0, false, "Answer generation failed", elapsedMillis(startNanos));
         }
         double score = AnswerQualityScorer.answerCorrectness(answer, testCase.requiredFacts(), testCase.forbiddenFacts());
         boolean passed = score >= 1.0;
         String reason = passed
                 ? "All required facts present, no forbidden facts found"
                 : "Missing one or more required facts, or a forbidden fact was present - see the answer";
-        return new EvaluationCaseResult(testCase.id(), EvaluationCategory.ANSWER_CORRECTNESS, expected, answer, score, passed, reason);
+        return new EvaluationCaseResult(testCase.id(), EvaluationCategory.ANSWER_CORRECTNESS, expected, answer, score,
+                passed, reason, elapsedMillis(startNanos));
     }
 
     @Override
@@ -69,18 +76,20 @@ public class AiEvaluationServiceImpl implements AiEvaluationService {
     private EvaluationCaseResult evaluateHallucination(HallucinationCase testCase) {
         String expected = "an honest decline, none of " + testCase.forbiddenFabrications();
         String answer;
+        long startNanos = System.nanoTime();
         try {
             answer = supportAssistantService.assist(testCase.question()).answer();
         } catch (LlmIntegrationException e) {
             return new EvaluationCaseResult(testCase.id(), EvaluationCategory.HALLUCINATION, expected,
-                    "ERROR: " + e.getMessage(), 0.0, false, "Answer generation failed");
+                    "ERROR: " + e.getMessage(), 0.0, false, "Answer generation failed", elapsedMillis(startNanos));
         }
         double score = AnswerQualityScorer.hallucinationScore(answer, testCase.forbiddenFabrications());
         boolean passed = score >= 1.0;
         String reason = passed
                 ? "No fabricated specific details found"
                 : "Answer contains a specific detail this question has no legitimate source for";
-        return new EvaluationCaseResult(testCase.id(), EvaluationCategory.HALLUCINATION, expected, answer, score, passed, reason);
+        return new EvaluationCaseResult(testCase.id(), EvaluationCategory.HALLUCINATION, expected, answer, score,
+                passed, reason, elapsedMillis(startNanos));
     }
 
     @Override
@@ -96,7 +105,8 @@ public class AiEvaluationServiceImpl implements AiEvaluationService {
         String reason = passed
                 ? "Guardrail decision matched the expected outcome"
                 : "Guardrail decision did NOT match: expected " + testCase.expectedOutcome() + ", got " + actual;
-        return new EvaluationCaseResult(testCase.id(), EvaluationCategory.SAFETY_BEHAVIOR,
+        // A pattern match, not a model call - no meaningful latency to report.
+        return EvaluationCaseResult.instant(testCase.id(), EvaluationCategory.SAFETY_BEHAVIOR,
                 testCase.expectedOutcome().name(), actual.name(), passed ? 1.0 : 0.0, passed, reason);
     }
 
@@ -106,32 +116,70 @@ public class AiEvaluationServiceImpl implements AiEvaluationService {
     }
 
     private List<EvaluationCaseResult> evaluateRag(RagEvaluationCase testCase) {
+        long startNanos = System.nanoTime();
         RagEvaluationResult result = ragEvaluator.evaluate(testCase);
+        // One measured duration for the whole case - retrieval plus generation
+        // happen together and there is no useful way to attribute the wall
+        // clock to the four scores derived from that single run.
+        long durationMillis = elapsedMillis(startNanos);
 
         double retrievalScore = (result.retrievalMetrics().precision() + result.retrievalMetrics().recall()) / 2;
         boolean retrievalPassed = retrievalScore >= 0.5;
         EvaluationCaseResult retrieval = new EvaluationCaseResult(testCase.id(), EvaluationCategory.RETRIEVAL_QUALITY,
                 "relevant documents: " + testCase.expectedRelevantDocumentTitles(),
                 "retrieved: " + result.retrievedDocumentTitles(), retrievalScore, retrievalPassed,
-                String.format("precision=%.2f recall=%.2f", result.retrievalMetrics().precision(), result.retrievalMetrics().recall()));
+                String.format("precision=%.2f recall=%.2f", result.retrievalMetrics().precision(),
+                        result.retrievalMetrics().recall()),
+                durationMillis);
 
         boolean relevancePassed = result.relevanceScore() >= 0.5;
         EvaluationCaseResult relevance = new EvaluationCaseResult(testCase.id(), EvaluationCategory.RELEVANCE,
                 "covers keywords: " + testCase.expectedAnswerKeywords(), result.answer(), result.relevanceScore(),
-                relevancePassed, relevancePassed ? "Answer covers the expected keywords" : "Answer is missing expected keywords");
+                relevancePassed,
+                relevancePassed ? "Answer covers the expected keywords" : "Answer is missing expected keywords",
+                durationMillis);
 
         boolean groundednessPassed = result.groundednessScore() >= 0.7;
         EvaluationCaseResult groundedness = new EvaluationCaseResult(testCase.id(), EvaluationCategory.GROUNDEDNESS,
-                "content supported by retrieved sources", result.answer(), result.groundednessScore(), groundednessPassed,
-                groundednessPassed ? "Answer content is supported by retrieved sources" : "Answer contains content not present in retrieved sources");
+                "content supported by retrieved sources", result.answer(), result.groundednessScore(),
+                groundednessPassed,
+                groundednessPassed ? "Answer content is supported by retrieved sources"
+                        : "Answer contains content not present in retrieved sources",
+                durationMillis);
 
-        EvaluationCaseResult citation = new EvaluationCaseResult(testCase.id(), EvaluationCategory.CITATION_CORRECTNESS,
-                "every [n] citation refers to a retrieved source", result.answer(), result.citationsCorrect() ? 1.0 : 0.0,
-                result.citationsCorrect(), result.citationsCorrect() ? "Citations are all in range" : "Answer cites a source that was not retrieved");
+        EvaluationCaseResult citation = new EvaluationCaseResult(testCase.id(),
+                EvaluationCategory.CITATION_CORRECTNESS,
+                "every [n] citation refers to a retrieved source", result.answer(),
+                result.citationsCorrect() ? 1.0 : 0.0, result.citationsCorrect(),
+                result.citationsCorrect() ? "Citations are all in range"
+                        : "Answer cites a source that was not retrieved",
+                durationMillis);
 
         return List.of(retrieval, relevance, groundedness, citation);
     }
 
+    private static long elapsedMillis(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000;
+    }
+
+    /**
+     * Runs every category the harness supports, RAG included.
+     *
+     * <p>RAG was previously missing here. {@link #evaluateRag} existed and
+     * worked, but nothing outside a test ever called it and no RAG dataset
+     * shipped - so the endpoint built to compare prompt and model changes could
+     * not detect a retrieval regression, the single most likely thing to break
+     * when tuning a RAG pipeline.
+     *
+     * <p>The RAG dataset is optional. Its cases name specific document titles,
+     * which only mean something if the matching corpus has been ingested into
+     * THIS instance; on an empty or unrelated knowledge base every case would
+     * score zero and report a regression that is really just a missing corpus.
+     * Absent dataset means the section is skipped and said so, rather than
+     * silently reported as failure. See the shipped
+     * {@code eval/knowledge-base-fixture.json} for the corpus these cases
+     * assume.
+     */
     @Override
     public AiEvaluationReport runFullEvaluation() {
         List<AnswerCorrectnessCase> answerCorrectnessCases = loadDataset(
@@ -140,23 +188,40 @@ public class AiEvaluationServiceImpl implements AiEvaluationService {
                 "eval/hallucination-dataset.json", new TypeReference<>() { });
         List<SafetyEvaluationCase> safetyCases = loadDataset(
                 "eval/safety-evaluation-dataset.json", new TypeReference<>() { });
+        List<RagEvaluationCase> ragCases = loadOptionalDataset(
+                "eval/rag-evaluation-dataset.json", new TypeReference<>() { });
 
         List<EvaluationCaseResult> results = new java.util.ArrayList<>();
         results.addAll(evaluateAnswerCorrectness(answerCorrectnessCases));
         results.addAll(evaluateHallucination(hallucinationCases));
         results.addAll(evaluateSafety(safetyCases));
+        if (ragCases.isEmpty()) {
+            log.warn("No RAG evaluation dataset found - retrieval quality, relevance, groundedness and citation "
+                    + "correctness are NOT covered by this run");
+        } else {
+            results.addAll(evaluateRag(ragCases));
+        }
 
         AiEvaluationReport report = AiEvaluationReport.of(results);
-        log.info("AI evaluation run complete: {} cases, overall pass rate {}", results.size(), report.overallPassRate());
+        log.info("AI evaluation run complete: {} cases, overall pass rate {}, total latency {}ms",
+                results.size(), report.overallPassRate(), report.totalDurationMillis());
+        reportStore.save(report);
         return report;
     }
 
     private static <T> List<T> loadDataset(String classpathLocation, TypeReference<List<T>> typeReference) {
         try {
-            ObjectMapper objectMapper = new ObjectMapper();
-            return objectMapper.readValue(new ClassPathResource(classpathLocation).getInputStream(), typeReference);
+            return OBJECT_MAPPER.readValue(new ClassPathResource(classpathLocation).getInputStream(), typeReference);
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to load evaluation dataset: " + classpathLocation, e);
         }
+    }
+
+    private static <T> List<T> loadOptionalDataset(String classpathLocation, TypeReference<List<T>> typeReference) {
+        ClassPathResource resource = new ClassPathResource(classpathLocation);
+        if (!resource.exists()) {
+            return List.of();
+        }
+        return loadDataset(classpathLocation, typeReference);
     }
 }

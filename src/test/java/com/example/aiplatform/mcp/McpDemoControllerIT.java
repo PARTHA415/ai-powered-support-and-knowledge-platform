@@ -4,6 +4,7 @@ import com.example.aiplatform.ai.embedding.EmbeddingService;
 import com.example.aiplatform.ai.llm.LlmClientService;
 import com.example.aiplatform.model.McpAssistantRequest;
 import com.example.aiplatform.model.McpAssistantResponse;
+import org.springframework.test.context.ActiveProfiles;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -42,10 +43,11 @@ import static org.mockito.Mockito.when;
  * client.base-url} must be known as a static test property at context-
  * creation time, before the assigned random port would even exist.
  */
+@ActiveProfiles("dev")
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT,
         properties = {"server.port=18098", "app.mcp.demo-client.base-url=http://localhost:18098"})
-class McpDemoControllerIntegrationTest {
+class McpDemoControllerIT {
 
     @Container
     @ServiceConnection

@@ -22,7 +22,7 @@ class SpringAiEmbeddingServiceTest {
         float[] expected = {0.1f, 0.2f, 0.3f};
         when(embeddingModel.embed("How do I reset my password?")).thenReturn(expected);
 
-        SpringAiEmbeddingService service = new SpringAiEmbeddingService(embeddingModel);
+        SpringAiEmbeddingService service = new SpringAiEmbeddingService(embeddingModel, "text-embedding-3-small");
         float[] actual = service.embed("How do I reset my password?");
 
         assertThat(actual).isEqualTo(expected);
@@ -32,7 +32,7 @@ class SpringAiEmbeddingServiceTest {
     void wrapsEmbeddingModelFailuresInLlmIntegrationException() {
         when(embeddingModel.embed("bad input")).thenThrow(new RuntimeException("provider error"));
 
-        SpringAiEmbeddingService service = new SpringAiEmbeddingService(embeddingModel);
+        SpringAiEmbeddingService service = new SpringAiEmbeddingService(embeddingModel, "text-embedding-3-small");
 
         assertThatThrownBy(() -> service.embed("bad input"))
                 .isInstanceOf(LlmIntegrationException.class)

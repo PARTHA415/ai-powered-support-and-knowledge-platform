@@ -47,7 +47,7 @@ class ToolSelectionEvaluationTest {
             new BusinessDataStore(),
             new ToolExecutionGuard(new GuardrailProperties(20, 6000)),
             mock(SemanticSearchService.class),
-            new com.example.aiplatform.config.RagProperties(800, 100, 5, 0.5),
+            new com.example.aiplatform.config.RagProperties(800, 100, 32, 5, 0.5),
             new PatternBasedPromptInjectionGuard());
 
     @AfterEach

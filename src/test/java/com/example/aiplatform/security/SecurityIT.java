@@ -1,6 +1,7 @@
 package com.example.aiplatform.security;
 
 import com.example.aiplatform.ai.embedding.EmbeddingService;
+import org.springframework.test.context.ActiveProfiles;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -14,6 +15,9 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import java.util.List;
+
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
@@ -31,10 +35,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * actual login mechanism - the part @WithMockUser deliberately bypasses -
  * genuinely works.
  */
+@ActiveProfiles("dev")
 @Testcontainers
 @SpringBootTest
 @AutoConfigureMockMvc
-class SecurityIntegrationTest {
+class SecurityIT {
 
     @Container
     @ServiceConnection
@@ -50,6 +55,11 @@ class SecurityIntegrationTest {
     @Test
     void correctCredentialsAuthenticateSuccessfully() throws Exception {
         when(embeddingService.embed(anyString())).thenReturn(new float[1536]);
+        when(embeddingService.embedAll(anyList())).thenAnswer(inv -> {
+            List<String> texts = inv.getArgument(0);
+            return texts.stream().map(t -> new float[1536]).toList();
+        });
+        when(embeddingService.modelName()).thenReturn("text-embedding-3-small");
 
         mockMvc.perform(post("/api/documents")
                         .with(httpBasic("carol", "password"))
@@ -90,6 +100,11 @@ class SecurityIntegrationTest {
     @Test
     void supportAgentRoleCanIngestDocuments() throws Exception {
         when(embeddingService.embed(anyString())).thenReturn(new float[1536]);
+        when(embeddingService.embedAll(anyList())).thenAnswer(inv -> {
+            List<String> texts = inv.getArgument(0);
+            return texts.stream().map(t -> new float[1536]).toList();
+        });
+        when(embeddingService.modelName()).thenReturn("text-embedding-3-small");
 
         mockMvc.perform(post("/api/documents")
                         .with(httpBasic("carol", "password"))

@@ -43,7 +43,7 @@ class QuestionAnsweringServiceImplTest {
 
     @Test
     void retrievesTopKChunksAndReturnsAnswerWithSourcesAboveThreshold() {
-        RagProperties ragProperties = new RagProperties(800, 100, 5, 0.5);
+        RagProperties ragProperties = new RagProperties(800, 100, 32, 5, 0.5);
         QuestionAnsweringServiceImpl service = new QuestionAnsweringServiceImpl(
                 semanticSearchService, promptBuilder, llmClientService, ragProperties, promptInjectionGuard, "gpt-4o-mini");
 
@@ -67,7 +67,7 @@ class QuestionAnsweringServiceImplTest {
 
     @Test
     void contextPassedToPromptBuilderIsNumberedAndExcludesChunksBelowThreshold() {
-        RagProperties ragProperties = new RagProperties(800, 100, 5, 0.5);
+        RagProperties ragProperties = new RagProperties(800, 100, 32, 5, 0.5);
         QuestionAnsweringServiceImpl service = new QuestionAnsweringServiceImpl(
                 semanticSearchService, promptBuilder, llmClientService, ragProperties, promptInjectionGuard, "gpt-4o-mini");
 
@@ -95,7 +95,7 @@ class QuestionAnsweringServiceImplTest {
 
     @Test
     void noChunksMeetingThresholdStillCallsLlmWithNoDocumentationFoundContext() {
-        RagProperties ragProperties = new RagProperties(800, 100, 5, 0.5);
+        RagProperties ragProperties = new RagProperties(800, 100, 32, 5, 0.5);
         QuestionAnsweringServiceImpl service = new QuestionAnsweringServiceImpl(
                 semanticSearchService, promptBuilder, llmClientService, ragProperties, promptInjectionGuard, "gpt-4o-mini");
 
@@ -117,7 +117,7 @@ class QuestionAnsweringServiceImplTest {
 
     @Test
     void answerRejectsDirectPromptInjectionAttemptWithoutSearchingOrCallingTheLlm() {
-        RagProperties ragProperties = new RagProperties(800, 100, 5, 0.5);
+        RagProperties ragProperties = new RagProperties(800, 100, 32, 5, 0.5);
         QuestionAnsweringServiceImpl service = new QuestionAnsweringServiceImpl(
                 semanticSearchService, promptBuilder, llmClientService, ragProperties, promptInjectionGuard, "gpt-4o-mini");
 
@@ -128,7 +128,7 @@ class QuestionAnsweringServiceImplTest {
 
     @Test
     void indirectInjectionInARetrievedChunkIsRedactedBeforeReachingThePrompt() {
-        RagProperties ragProperties = new RagProperties(800, 100, 5, 0.5);
+        RagProperties ragProperties = new RagProperties(800, 100, 32, 5, 0.5);
         QuestionAnsweringServiceImpl service = new QuestionAnsweringServiceImpl(
                 semanticSearchService, promptBuilder, llmClientService, ragProperties, promptInjectionGuard, "gpt-4o-mini");
 

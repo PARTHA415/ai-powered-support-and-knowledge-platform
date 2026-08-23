@@ -14,6 +14,13 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 public record RagProperties(
         @DefaultValue("800") int chunkSize,
         @DefaultValue("100") int chunkOverlap,
+        /**
+         * How many chunks are embedded per provider call during ingestion.
+         * Batched rather than one call for a whole document because providers
+         * cap request size and tokens per request; a fixed batch keeps one
+         * oversized document from producing one oversized request.
+         */
+        @DefaultValue("32") int embeddingBatchSize,
         @DefaultValue("5") int topK,
         @DefaultValue("0.5") double similarityThreshold
 ) {

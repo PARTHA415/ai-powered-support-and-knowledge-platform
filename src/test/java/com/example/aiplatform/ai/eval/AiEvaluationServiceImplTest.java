@@ -11,6 +11,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.prompt.Prompt;
+import com.example.aiplatform.config.TemperatureProperties;
 import org.springframework.core.io.ClassPathResource;
 
 import java.util.List;
@@ -56,10 +57,13 @@ class AiEvaluationServiceImplTest {
                 new ClassPathResource("prompts/tools-system.st"),
                 new ClassPathResource("prompts/agent-planning-system.st"),
                 new ClassPathResource("prompts/agent-final-system.st"),
-                new ClassPathResource("prompts/agent-final-user.st"));
+                new ClassPathResource("prompts/agent-final-user.st"),
+                new TemperatureProperties(0.7, 0.2, 0.0));
         SupportAssistantServiceImpl supportAssistantService = new SupportAssistantServiceImpl(
                 promptBuilder, llmClientService, supportTools, promptInjectionGuard, "gpt-4o-mini");
-        return new AiEvaluationServiceImpl(supportAssistantService, promptInjectionGuard, ragEvaluator);
+        return new AiEvaluationServiceImpl(supportAssistantService, promptInjectionGuard, ragEvaluator,
+                new EvaluationReportStore(new com.fasterxml.jackson.databind.ObjectMapper(),
+                        System.getProperty("java.io.tmpdir") + "/eval-reports-test"));
     }
 
     private void stubAnswer(String question, String answer) {
