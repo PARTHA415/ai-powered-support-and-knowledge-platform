@@ -6,12 +6,16 @@ import com.example.aiplatform.ai.guardrails.ToolExecutionGuard;
 import com.example.aiplatform.ai.rag.SemanticSearchService;
 import com.example.aiplatform.config.GuardrailProperties;
 import com.example.aiplatform.config.RagProperties;
+import com.example.aiplatform.config.TestRagProperties;
 import com.example.aiplatform.model.Role;
 import com.example.aiplatform.model.SemanticSearchResult;
 import com.example.aiplatform.security.TestPrincipals;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.aiplatform.observability.RequestContext;
+import com.example.aiplatform.observability.RequestContextHolder;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.ai.tool.ToolCallback;
@@ -51,7 +55,7 @@ class SupportToolsTest {
 
     private final BusinessDataStore businessDataStore = new BusinessDataStore();
     private final SemanticSearchService semanticSearchService = Mockito.mock(SemanticSearchService.class);
-    private final RagProperties ragProperties = new RagProperties(800, 100, 32, 5, 0.5);
+    private final RagProperties ragProperties = TestRagProperties.defaults();
     private final PromptInjectionGuard promptInjectionGuard = new PatternBasedPromptInjectionGuard();
     private final SupportTools supportTools =
             new SupportTools(businessDataStore, new ToolExecutionGuard(new GuardrailProperties(20, 6000)),
@@ -62,6 +66,25 @@ class SupportToolsTest {
             .toolObjects(supportTools)
             .build()
             .getToolCallbacks();
+
+    /**
+     * Every tool method records its invocation against the request's tool-call
+     * budget, which now lives in the {@link RequestContext} the servlet filter
+     * opens - so a unit test calling a tool directly has to open one too. That
+     * is the intended cost of making the guardrail fail loudly rather than
+     * silently restarting its count on whatever thread it finds itself on.
+     */
+    private RequestContextHolder.Scope requestScope;
+
+    @BeforeEach
+    void openRequestContext() {
+        requestScope = RequestContextHolder.open(RequestContext.forRequest("test-correlation-id"));
+    }
+
+    @AfterEach
+    void closeRequestContext() {
+        requestScope.close();
+    }
 
     @AfterEach
     void clearSecurityContext() {

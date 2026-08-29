@@ -47,7 +47,7 @@ class AgentControllerTest {
                 List.of(new AgentStepRecord("PLANNING", true, "needsBusinessTool=true", 10),
                         new AgentStepRecord("BUSINESS_TOOL", true, "Tool-enabled LLM call completed", 200),
                         new AgentStepRecord("FINALIZE", true, "Final answer generated", 150)),
-                false, false, 360);
+                false, 360);
         when(agentService.handle(eq("conv-1"), eq("What's the status of order ORD-1001?")))
                 .thenReturn(new AgentResponse("Order ORD-1001 is SHIPPED.", "gpt-4o-mini", trail));
 
@@ -61,7 +61,7 @@ class AgentControllerTest {
                 .andExpect(jsonPath("$.auditTrail.businessToolPlanned").value(true))
                 .andExpect(jsonPath("$.auditTrail.knowledgeBasePlanned").value(false))
                 .andExpect(jsonPath("$.auditTrail.steps.length()").value(3))
-                .andExpect(jsonPath("$.auditTrail.maxIterationsExceeded").value(false));
+                .andExpect(jsonPath("$.auditTrail.timedOut").value(false));
     }
 
     @Test

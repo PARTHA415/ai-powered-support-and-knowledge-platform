@@ -1,6 +1,7 @@
 package com.example.aiplatform.ai.eval;
 
 import com.example.aiplatform.ai.guardrails.PromptInjectionGuard;
+import com.example.aiplatform.model.JudgeVerdict;
 import com.example.aiplatform.exception.LlmIntegrationException;
 import com.example.aiplatform.service.SupportAssistantService;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -33,15 +34,21 @@ public class AiEvaluationServiceImpl implements AiEvaluationService {
     private final PromptInjectionGuard promptInjectionGuard;
     private final RagEvaluator ragEvaluator;
     private final EvaluationReportStore reportStore;
+    private final SimilarityThresholdCalibrator similarityThresholdCalibrator;
+    private final com.example.aiplatform.config.EvaluationProperties evaluationProperties;
 
     public AiEvaluationServiceImpl(SupportAssistantService supportAssistantService,
                                     PromptInjectionGuard promptInjectionGuard,
                                     RagEvaluator ragEvaluator,
-                                    EvaluationReportStore reportStore) {
+                                    EvaluationReportStore reportStore,
+                                    SimilarityThresholdCalibrator similarityThresholdCalibrator,
+                                    com.example.aiplatform.config.EvaluationProperties evaluationProperties) {
         this.supportAssistantService = supportAssistantService;
         this.promptInjectionGuard = promptInjectionGuard;
         this.ragEvaluator = ragEvaluator;
         this.reportStore = reportStore;
+        this.similarityThresholdCalibrator = similarityThresholdCalibrator;
+        this.evaluationProperties = evaluationProperties;
     }
 
     @Override
@@ -155,7 +162,28 @@ public class AiEvaluationServiceImpl implements AiEvaluationService {
                         : "Answer cites a source that was not retrieved",
                 durationMillis);
 
-        return List.of(retrieval, relevance, groundedness, citation);
+
+        List<EvaluationCaseResult> results = new java.util.ArrayList<>(
+                List.of(retrieval, relevance, groundedness, citation));
+
+        // Only emitted when the judge actually ran and actually answered.
+        // Absent rows are honest: a category that silently reported 0 for every
+        // case because the tier was disabled would look like a total quality
+        // collapse in the one artefact people read to detect quality collapses.
+        if (result.hasJudgeVerdict()) {
+            JudgeVerdict verdict = result.judgeVerdict();
+            boolean judgeGroundednessPassed = verdict.groundedness() >= 0.7;
+            results.add(new EvaluationCaseResult(testCase.id(), EvaluationCategory.JUDGE_GROUNDEDNESS,
+                    "every claim entailed by the retrieved context", result.answer(), verdict.groundedness(),
+                    judgeGroundednessPassed, verdict.groundednessReason(), durationMillis));
+
+            boolean judgeRelevancePassed = verdict.relevance() >= 0.7;
+            results.add(new EvaluationCaseResult(testCase.id(), EvaluationCategory.JUDGE_RELEVANCE,
+                    "answers the question that was asked", result.answer(), verdict.relevance(),
+                    judgeRelevancePassed, verdict.relevanceReason(), durationMillis));
+        }
+
+        return results;
     }
 
     private static long elapsedMillis(long startNanos) {
@@ -192,14 +220,14 @@ public class AiEvaluationServiceImpl implements AiEvaluationService {
                 "eval/rag-evaluation-dataset.json", new TypeReference<>() { });
 
         List<EvaluationCaseResult> results = new java.util.ArrayList<>();
-        results.addAll(evaluateAnswerCorrectness(answerCorrectnessCases));
-        results.addAll(evaluateHallucination(hallucinationCases));
+        results.addAll(evaluateAnswerCorrectness(capped(answerCorrectnessCases)));
+        results.addAll(evaluateHallucination(capped(hallucinationCases)));
         results.addAll(evaluateSafety(safetyCases));
         if (ragCases.isEmpty()) {
             log.warn("No RAG evaluation dataset found - retrieval quality, relevance, groundedness and citation "
                     + "correctness are NOT covered by this run");
         } else {
-            results.addAll(evaluateRag(ragCases));
+            results.addAll(evaluateRag(capped(ragCases)));
         }
 
         AiEvaluationReport report = AiEvaluationReport.of(results);
@@ -207,6 +235,37 @@ public class AiEvaluationServiceImpl implements AiEvaluationService {
                 results.size(), report.overallPassRate(), report.totalDurationMillis());
         reportStore.save(report);
         return report;
+    }
+
+
+    @Override
+    public ThresholdCalibrationReport calibrateSimilarityThreshold() {
+        List<RagEvaluationCase> ragCases = loadOptionalDataset(
+                "eval/rag-evaluation-dataset.json", new TypeReference<>() { });
+        if (ragCases.isEmpty()) {
+            log.warn("No RAG evaluation dataset found - there is nothing to calibrate the similarity "
+                    + "threshold against. Calibration needs labelled questions and the corpus they refer to.");
+        }
+        return similarityThresholdCalibrator.calibrate(capped(ragCases));
+    }
+
+    /**
+     * Truncates a dataset to {@code app.eval.max-cases}.
+     *
+     * <p>Every case in an evaluation run is at least one billed call, executed
+     * in a loop over a file that lives in the repository. A dataset that grows
+     * past what anyone intended to spend is not a hypothetical - it is the
+     * ordinary result of several people adding cases - and a ceiling turns that
+     * into a truncated run and a warning rather than into a bill.
+     */
+    private <T> List<T> capped(List<T> cases) {
+        if (cases.size() <= evaluationProperties.maxCases()) {
+            return cases;
+        }
+        log.warn("Evaluation dataset has {} cases, over the app.eval.max-cases ceiling of {} - running the "
+                + "first {} only. Raise the ceiling deliberately if the whole set is meant to run.",
+                cases.size(), evaluationProperties.maxCases(), evaluationProperties.maxCases());
+        return cases.subList(0, evaluationProperties.maxCases());
     }
 
     private static <T> List<T> loadDataset(String classpathLocation, TypeReference<List<T>> typeReference) {

@@ -1,8 +1,10 @@
 package com.example.aiplatform.ai.eval;
 
 import com.example.aiplatform.ai.rag.SemanticSearchService;
+import com.example.aiplatform.config.EvaluationProperties;
 import com.example.aiplatform.config.RagProperties;
 import com.example.aiplatform.model.AskResponse;
+import com.example.aiplatform.model.JudgeVerdict;
 import com.example.aiplatform.model.SemanticSearchResult;
 import com.example.aiplatform.service.QuestionAnsweringService;
 import org.springframework.stereotype.Service;
@@ -15,13 +17,19 @@ public class RagEvaluatorImpl implements RagEvaluator {
     private final SemanticSearchService semanticSearchService;
     private final QuestionAnsweringService questionAnsweringService;
     private final RagProperties ragProperties;
+    private final LlmJudge llmJudge;
+    private final EvaluationProperties evaluationProperties;
 
     public RagEvaluatorImpl(SemanticSearchService semanticSearchService,
                              QuestionAnsweringService questionAnsweringService,
-                             RagProperties ragProperties) {
+                             RagProperties ragProperties,
+                             LlmJudge llmJudge,
+                             EvaluationProperties evaluationProperties) {
         this.semanticSearchService = semanticSearchService;
         this.questionAnsweringService = questionAnsweringService;
         this.ragProperties = ragProperties;
+        this.llmJudge = llmJudge;
+        this.evaluationProperties = evaluationProperties;
     }
 
     @Override
@@ -38,8 +46,17 @@ public class RagEvaluatorImpl implements RagEvaluator {
         double groundedness = AnswerQualityScorer.groundednessScore(response.answer(), response.sources());
         boolean citationsCorrect = AnswerQualityScorer.citationsCorrect(response.answer(), response.sources());
 
+        // The deterministic scorers ALWAYS run, judge or no judge. The judge is
+        // an additional opinion, not a replacement: when the two disagree that
+        // is itself the finding - a high overlap score with a low judge
+        // groundedness score is exactly the fabrication-from-the-context's-own-
+        // vocabulary case that word counting cannot see.
+        JudgeVerdict verdict = evaluationProperties.llmJudgeEnabled()
+                ? llmJudge.judge(evaluationCase.question(), response.answer(), response.sources())
+                : null;
+
         return new RagEvaluationResult(
                 evaluationCase.id(), retrievalMetrics, relevance, groundedness, citationsCorrect,
-                response.answer(), retrievedTitles);
+                response.answer(), retrievedTitles, verdict);
     }
 }

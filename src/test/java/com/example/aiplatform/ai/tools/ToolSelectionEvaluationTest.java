@@ -8,11 +8,15 @@ import com.example.aiplatform.ai.guardrails.PatternBasedPromptInjectionGuard;
 import com.example.aiplatform.ai.guardrails.ToolExecutionGuard;
 import com.example.aiplatform.ai.rag.SemanticSearchService;
 import com.example.aiplatform.config.GuardrailProperties;
+import com.example.aiplatform.config.TestRagProperties;
 import com.example.aiplatform.model.Role;
 import com.example.aiplatform.security.TestPrincipals;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.aiplatform.observability.RequestContext;
+import com.example.aiplatform.observability.RequestContextHolder;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,8 +51,27 @@ class ToolSelectionEvaluationTest {
             new BusinessDataStore(),
             new ToolExecutionGuard(new GuardrailProperties(20, 6000)),
             mock(SemanticSearchService.class),
-            new com.example.aiplatform.config.RagProperties(800, 100, 32, 5, 0.5),
+            TestRagProperties.defaults(),
             new PatternBasedPromptInjectionGuard());
+
+    /**
+     * Every tool method records its invocation against the request's tool-call
+     * budget, which now lives in the {@link RequestContext} the servlet filter
+     * opens - so a unit test calling a tool directly has to open one too. That
+     * is the intended cost of making the guardrail fail loudly rather than
+     * silently restarting its count on whatever thread it finds itself on.
+     */
+    private RequestContextHolder.Scope requestScope;
+
+    @BeforeEach
+    void openRequestContext() {
+        requestScope = RequestContextHolder.open(RequestContext.forRequest("test-correlation-id"));
+    }
+
+    @AfterEach
+    void closeRequestContext() {
+        requestScope.close();
+    }
 
     @AfterEach
     void clearSecurityContext() {

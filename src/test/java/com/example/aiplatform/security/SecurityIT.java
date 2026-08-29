@@ -21,7 +21,9 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -51,6 +53,42 @@ class SecurityIT {
 
     @MockBean
     private EmbeddingService embeddingService;
+
+    /**
+     * The liveness and readiness probes are reachable without credentials, the
+     * same tier as the aggregate health endpoint and the Prometheus scrape.
+     *
+     * <p>Splitting them from {@code /actuator/health} is what stops a degraded
+     * dependency from being read as "restart this pod": readiness failing takes
+     * an instance out of rotation, liveness failing kills it, and the aggregate
+     * endpoint cannot express the difference. An orchestrator wired to the
+     * aggregate will restart a healthy instance because Redis blipped.
+     */
+    @Test
+    void livenessAndReadinessProbesAreReachableWithoutCredentials() throws Exception {
+        mockMvc.perform(get("/actuator/health/liveness")).andExpect(status().isOk());
+        mockMvc.perform(get("/actuator/health/readiness")).andExpect(status().isOk());
+    }
+
+    @Test
+    void probesAreDistinctEndpointsFromTheAggregateHealthCheck() throws Exception {
+        mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+        mockMvc.perform(get("/actuator/health/liveness"))
+                .andExpect(jsonPath("$.status").value("UP"));
+    }
+
+    /**
+     * Actuator's other endpoints stay unavailable entirely - env and configprops
+     * in particular can leak configuration and secrets, and permitting the
+     * probes must not widen that.
+     */
+    @Test
+    void otherActuatorEndpointsRemainUnexposed() throws Exception {
+        mockMvc.perform(get("/actuator/env").with(httpBasic("dave", "password")))
+                .andExpect(status().isNotFound());
+    }
 
     @Test
     void correctCredentialsAuthenticateSuccessfully() throws Exception {

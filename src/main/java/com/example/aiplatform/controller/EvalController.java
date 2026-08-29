@@ -2,6 +2,7 @@ package com.example.aiplatform.controller;
 
 import com.example.aiplatform.ai.eval.AiEvaluationReport;
 import com.example.aiplatform.ai.eval.AiEvaluationService;
+import com.example.aiplatform.ai.eval.ThresholdCalibrationReport;
 import io.swagger.v3.oas.annotations.Operation;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -34,5 +35,13 @@ public class EvalController {
     @PostMapping("/api/eval/run")
     public ResponseEntity<AiEvaluationReport> run() {
         return ResponseEntity.ok(aiEvaluationService.runFullEvaluation());
+    }
+
+    @Operation(summary = "Sweep the RAG similarity threshold over the labelled dataset and report precision, "
+            + "recall and F1 at each value - so app.rag.similarity-threshold can be chosen from the corpus "
+            + "rather than guessed. Makes no LLM calls.")
+    @PostMapping("/api/eval/calibrate-threshold")
+    public ResponseEntity<ThresholdCalibrationReport> calibrateThreshold() {
+        return ResponseEntity.ok(aiEvaluationService.calibrateSimilarityThreshold());
     }
 }

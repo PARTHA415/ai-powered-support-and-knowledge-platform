@@ -3,7 +3,9 @@ package com.example.aiplatform.service;
 import com.example.aiplatform.ai.embedding.EmbeddingService;
 import com.example.aiplatform.ai.guardrails.PatternBasedPromptInjectionGuard;
 import com.example.aiplatform.ai.guardrails.PromptInjectionGuard;
+import com.example.aiplatform.ai.rag.TokenAwareChunker;
 import com.example.aiplatform.config.RagProperties;
+import com.example.aiplatform.config.TestRagProperties;
 import com.example.aiplatform.model.IngestDocumentResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -11,11 +13,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,10 +27,17 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+/**
+ * Ingestion orchestration only. How text is cut into chunks is
+ * {@link TokenAwareChunker}'s job and is tested in
+ * {@link com.example.aiplatform.ai.rag.TokenAwareChunkerTest} - splitting them
+ * apart is the point of the extraction, and asserting on chunk boundaries from
+ * here would re-couple the two.
+ */
 @ExtendWith(MockitoExtension.class)
 class DocumentIngestionServiceImplTest {
 
-    private static final RagProperties DEFAULT_RAG_PROPERTIES = new RagProperties(800, 100, 32, 5, 0.5);
+    private static final RagProperties DEFAULT_RAG_PROPERTIES = TestRagProperties.defaults();
 
     private final PromptInjectionGuard promptInjectionGuard = new PatternBasedPromptInjectionGuard();
 
@@ -48,7 +54,7 @@ class DocumentIngestionServiceImplTest {
 
         DocumentIngestionServiceImpl service = newService(DEFAULT_RAG_PROPERTIES);
 
-        String longContent = "word ".repeat(400); // ~2000 chars, well past the 800-char chunk size
+        String longContent = "word ".repeat(1000);
         IngestDocumentResponse response = service.ingest("Kafka Troubleshooting", "kb/kafka.md", longContent, Map.of());
 
         assertThat(response.title()).isEqualTo("Kafka Troubleshooting");
@@ -70,20 +76,18 @@ class DocumentIngestionServiceImplTest {
     /**
      * The regression test for the per-chunk embedding call. Ingestion used to
      * make one sequential, billed HTTP round trip per chunk - roughly 130 for a
-     * 100 KB document. With a batch size of 10 and 25 chunks this must be three
-     * calls, not twenty-five, and {@code embed(String)} - the single-text,
-     * cached path meant for queries - must not be used at all.
+     * 100 KB document. With a small batch size and many chunks this must be a
+     * handful of calls, not one per chunk, and {@code embed(String)} - the
+     * single-text, cached path meant for queries - must not be used at all.
      */
     @Test
     void embedsInBatchesRatherThanOneCallPerChunk() {
         stubPersistence();
         stubEmbeddings();
 
-        // 50-char chunks over ~1250 chars of content gives ~25 chunks.
-        RagProperties smallBatches = new RagProperties(50, 0, 10, 5, 0.5);
-        DocumentIngestionServiceImpl service = newService(smallBatches);
+        DocumentIngestionServiceImpl service = newService(TestRagProperties.chunking(20, 0, 10));
 
-        IngestDocumentResponse response = service.ingest("Batched", null, uniqueWordContent(200), Map.of());
+        IngestDocumentResponse response = service.ingest("Batched", null, uniqueWordContent(400), Map.of());
 
         int expectedBatches = (int) Math.ceil(response.chunkCount() / 10.0);
         verify(embeddingService, times(expectedBatches)).embedAll(anyList());
@@ -112,35 +116,10 @@ class DocumentIngestionServiceImplTest {
         verify(documentPersistence).saveDocumentAndChunks(eq("Runbook"), eq(null), eq(metadata), anyList());
     }
 
-    @Test
-    void configuredOverlapCausesConsecutiveChunksToShareWords() {
-        stubPersistence();
-        stubEmbeddings();
-
-        newService(new RagProperties(50, 20, 32, 5, 0.5))
-                .ingest("Overlap Test", null, uniqueWordContent(80), Map.of());
-
-        List<String> chunks = capturedChunks();
-        assertThat(chunks.size()).isGreaterThan(2);
-        assertThat(sharedWords(chunks.get(0), chunks.get(1))).isNotEmpty();
-    }
-
-    @Test
-    void zeroOverlapProducesNoSharedWordsBetweenConsecutiveChunks() {
-        stubPersistence();
-        stubEmbeddings();
-
-        newService(new RagProperties(50, 0, 32, 5, 0.5))
-                .ingest("Overlap Test", null, uniqueWordContent(80), Map.of());
-
-        List<String> chunks = capturedChunks();
-        assertThat(chunks.size()).isGreaterThan(2);
-        assertThat(sharedWords(chunks.get(0), chunks.get(1))).isEmpty();
-    }
-
     private DocumentIngestionServiceImpl newService(RagProperties ragProperties) {
         return new DocumentIngestionServiceImpl(
-                documentPersistence, embeddingService, ragProperties, promptInjectionGuard);
+                documentPersistence, embeddingService, ragProperties,
+                new TokenAwareChunker(ragProperties), promptInjectionGuard);
     }
 
     private void stubPersistence() {
@@ -173,12 +152,5 @@ class DocumentIngestionServiceImplTest {
             content.append("token").append(i).append(' ');
         }
         return content.toString().strip();
-    }
-
-    private static Set<String> sharedWords(String first, String second) {
-        Set<String> firstWords = new HashSet<>(Arrays.asList(first.split("\\s+")));
-        Set<String> secondWords = new HashSet<>(Arrays.asList(second.split("\\s+")));
-        firstWords.retainAll(secondWords);
-        return firstWords;
     }
 }

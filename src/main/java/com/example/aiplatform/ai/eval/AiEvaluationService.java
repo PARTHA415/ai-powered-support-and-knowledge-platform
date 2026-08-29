@@ -14,9 +14,10 @@ import java.util.List;
  * methods run against mocked LLM/embedding boundaries for a fully
  * deterministic CI check.
  *
- * Covers six of the nine tracked categories directly: retrieval quality,
+ * Covers eight of the eleven tracked categories directly: retrieval quality,
  * relevance, groundedness, and citation correctness (delegated to
- * {@link RagEvaluator}), plus answer correctness, hallucination, and safety
+ * {@link RagEvaluator}), the two LLM-judge dimensions when that tier is
+ * enabled, plus answer correctness, hallucination, and safety
  * behavior. Tool selection and tool argument correctness are deliberately
  * NOT here - see {@link ToolSelectionScorer}'s Javadoc for why.
  */
@@ -42,4 +43,13 @@ public interface AiEvaluationService {
      * how to include RAG in a full run).
      */
     AiEvaluationReport runFullEvaluation();
+
+    /**
+     * Sweeps {@code app.rag.similarity-threshold} over the labelled RAG dataset
+     * and reports what each value would have retrieved. Separate from
+     * {@link #runFullEvaluation()} because it answers a different question -
+     * "what should this setting be" rather than "did the change help" - and
+     * because it costs no LLM calls at all, which makes it safe to run often.
+     */
+    ThresholdCalibrationReport calibrateSimilarityThreshold();
 }

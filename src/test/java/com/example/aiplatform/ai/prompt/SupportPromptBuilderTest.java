@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.prompt.Prompt;
+import com.example.aiplatform.config.ModelTierProperties;
 import com.example.aiplatform.config.TemperatureProperties;
 import org.springframework.core.io.ClassPathResource;
 
@@ -21,7 +22,10 @@ class SupportPromptBuilderTest {
             new ClassPathResource("prompts/agent-planning-system.st"),
             new ClassPathResource("prompts/agent-final-system.st"),
             new ClassPathResource("prompts/agent-final-user.st"),
-                new TemperatureProperties(0.7, 0.2, 0.0));
+            new ClassPathResource("prompts/judge-system.st"),
+            new ClassPathResource("prompts/judge-user.st"),
+                new TemperatureProperties(0.7, 0.2, 0.0),
+                new ModelTierProperties("gpt-4o-mini", "gpt-4o"));
 
     @Test
     void buildsPromptWithSystemPersonaAndInterpolatedUserQuestion() {

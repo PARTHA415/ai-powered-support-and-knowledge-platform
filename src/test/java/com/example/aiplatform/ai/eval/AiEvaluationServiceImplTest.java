@@ -11,6 +11,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.prompt.Prompt;
+import com.example.aiplatform.config.EvaluationProperties;
+import com.example.aiplatform.config.ModelTierProperties;
 import com.example.aiplatform.config.TemperatureProperties;
 import org.springframework.core.io.ClassPathResource;
 
@@ -44,6 +46,8 @@ class AiEvaluationServiceImplTest {
     private SupportTools supportTools;
     @Mock
     private RagEvaluator ragEvaluator;
+    @Mock
+    private SimilarityThresholdCalibrator similarityThresholdCalibrator;
 
     private final PromptInjectionGuard promptInjectionGuard = new PatternBasedPromptInjectionGuard();
 
@@ -58,12 +62,17 @@ class AiEvaluationServiceImplTest {
                 new ClassPathResource("prompts/agent-planning-system.st"),
                 new ClassPathResource("prompts/agent-final-system.st"),
                 new ClassPathResource("prompts/agent-final-user.st"),
-                new TemperatureProperties(0.7, 0.2, 0.0));
+                new ClassPathResource("prompts/judge-system.st"),
+                new ClassPathResource("prompts/judge-user.st"),
+                new TemperatureProperties(0.7, 0.2, 0.0),
+                new ModelTierProperties("gpt-4o-mini", "gpt-4o"));
         SupportAssistantServiceImpl supportAssistantService = new SupportAssistantServiceImpl(
-                promptBuilder, llmClientService, supportTools, promptInjectionGuard, "gpt-4o-mini");
+                promptBuilder, llmClientService, supportTools, promptInjectionGuard);
         return new AiEvaluationServiceImpl(supportAssistantService, promptInjectionGuard, ragEvaluator,
                 new EvaluationReportStore(new com.fasterxml.jackson.databind.ObjectMapper(),
-                        System.getProperty("java.io.tmpdir") + "/eval-reports-test"));
+                        System.getProperty("java.io.tmpdir") + "/eval-reports-test"),
+                similarityThresholdCalibrator,
+                new EvaluationProperties(false, 200));
     }
 
     private void stubAnswer(String question, String answer) {

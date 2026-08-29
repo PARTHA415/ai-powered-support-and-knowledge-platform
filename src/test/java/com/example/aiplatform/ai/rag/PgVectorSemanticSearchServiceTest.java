@@ -3,6 +3,7 @@ package com.example.aiplatform.ai.rag;
 import com.example.aiplatform.ai.embedding.EmbeddingService;
 import com.example.aiplatform.model.SemanticSearchResult;
 import com.example.aiplatform.model.SimilarChunk;
+import com.example.aiplatform.config.TestRagProperties;
 import com.example.aiplatform.observability.AiPipelineMetrics;
 import com.example.aiplatform.repository.DocumentChunkRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -39,7 +40,8 @@ class PgVectorSemanticSearchServiceTest {
         AiPipelineMetrics aiPipelineMetrics = new AiPipelineMetrics(new SimpleMeterRegistry());
         PgVectorSemanticSearchService service =
                 new PgVectorSemanticSearchService(embeddingService, documentChunkRepository, aiPipelineMetrics,
-                        new KnowledgeBaseAccessPolicy());
+                        new KnowledgeBaseAccessPolicy(), new ReciprocalRankFusionReranker(TestRagProperties.denseOnly(5, 0.5)),
+                        TestRagProperties.denseOnly(5, 0.5));
 
         List<SemanticSearchResult> results = service.search("How do I reset my password?", 5);
 
@@ -63,7 +65,8 @@ class PgVectorSemanticSearchServiceTest {
 
         PgVectorSemanticSearchService service =
                 new PgVectorSemanticSearchService(embeddingService, documentChunkRepository, aiPipelineMetrics,
-                        new KnowledgeBaseAccessPolicy());
+                        new KnowledgeBaseAccessPolicy(), new ReciprocalRankFusionReranker(TestRagProperties.denseOnly(5, 0.5)),
+                        TestRagProperties.denseOnly(5, 0.5));
 
         service.search("kafka consumer failures", 5);
 

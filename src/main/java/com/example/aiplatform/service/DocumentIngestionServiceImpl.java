@@ -2,6 +2,7 @@ package com.example.aiplatform.service;
 
 import com.example.aiplatform.ai.embedding.EmbeddingService;
 import com.example.aiplatform.ai.guardrails.PromptInjectionGuard;
+import com.example.aiplatform.ai.rag.TokenAwareChunker;
 import com.example.aiplatform.config.RagProperties;
 import com.example.aiplatform.model.IngestDocumentResponse;
 import org.slf4j.Logger;
@@ -25,11 +26,14 @@ import java.util.Map;
  *       with one short transaction per batch to store the results.</li>
  * </ol>
  *
- * <p>Chunk size and overlap remain configurable (app.rag.chunk-size /
- * app.rag.chunk-overlap - see {@link RagProperties}). Splitting is still a
- * fixed-size, soft word-boundary strategy - no token-awareness or
- * semantic-boundary detection - but overlap guards against a fact landing right
- * on a chunk boundary and becoming unretrievable on either side of the cut.
+ * <p>Chunk size and overlap are configurable and denominated in TOKENS
+ * (app.rag.chunk-tokens / app.rag.chunk-overlap-tokens - see
+ * {@link RagProperties}), and the splitting itself lives in
+ * {@link TokenAwareChunker}: a real tokenizer, cutting at paragraph and
+ * sentence boundaries rather than at an arbitrary character count. The
+ * character-based splitter this replaced produced chunks whose true token size
+ * varied by a factor of two with content density, which meant the most
+ * information-dense chunks in a technical corpus were also the largest.
  */
 @Service
 public class DocumentIngestionServiceImpl implements DocumentIngestionService {
@@ -39,15 +43,18 @@ public class DocumentIngestionServiceImpl implements DocumentIngestionService {
     private final DocumentPersistence documentPersistence;
     private final EmbeddingService embeddingService;
     private final RagProperties ragProperties;
+    private final TokenAwareChunker tokenAwareChunker;
     private final PromptInjectionGuard promptInjectionGuard;
 
     public DocumentIngestionServiceImpl(DocumentPersistence documentPersistence,
                                          EmbeddingService embeddingService,
                                          RagProperties ragProperties,
+                                         TokenAwareChunker tokenAwareChunker,
                                          PromptInjectionGuard promptInjectionGuard) {
         this.documentPersistence = documentPersistence;
         this.embeddingService = embeddingService;
         this.ragProperties = ragProperties;
+        this.tokenAwareChunker = tokenAwareChunker;
         this.promptInjectionGuard = promptInjectionGuard;
     }
 
@@ -72,7 +79,7 @@ public class DocumentIngestionServiceImpl implements DocumentIngestionService {
             log.debug("Ingested document '{}' contains SQL-shaped text; storing and serving it unchanged", title);
         }
 
-        List<String> chunks = splitIntoChunks(content, ragProperties.chunkSize(), ragProperties.chunkOverlap());
+        List<String> chunks = tokenAwareChunker.split(content);
 
         DocumentPersistence.StoredDocument stored =
                 documentPersistence.saveDocumentAndChunks(title, source, metadata, chunks);
@@ -105,28 +112,4 @@ public class DocumentIngestionServiceImpl implements DocumentIngestionService {
         }
     }
 
-    private static List<String> splitIntoChunks(String text, int chunkSize, int chunkOverlap) {
-        int overlap = Math.max(0, Math.min(chunkOverlap, chunkSize - 1));
-        List<String> chunks = new ArrayList<>();
-        String trimmed = text.strip();
-        int start = 0;
-        while (start < trimmed.length()) {
-            int end = Math.min(start + chunkSize, trimmed.length());
-            if (end < trimmed.length()) {
-                int lastSpace = trimmed.lastIndexOf(' ', end);
-                if (lastSpace > start) {
-                    end = lastSpace;
-                }
-            }
-            chunks.add(trimmed.substring(start, end).strip());
-            if (end >= trimmed.length()) {
-                break;
-            }
-            // Step back by the overlap amount so the next chunk re-includes
-            // the trailing text of this one, instead of always advancing to
-            // exactly where this chunk ended.
-            start = Math.max(end - overlap, start + 1);
-        }
-        return chunks;
-    }
 }

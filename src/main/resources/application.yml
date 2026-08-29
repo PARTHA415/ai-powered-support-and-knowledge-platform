@@ -1,4 +1,11 @@
 spring:
+  lifecycle:
+    # How long graceful shutdown waits for in-flight requests before giving up.
+    # Sized against the request it has to outlast, not picked round: an agent
+    # request is bounded at 30s by app.agent.timeout-seconds, so a shorter
+    # window here would guarantee killing exactly the longest, most expensive
+    # requests - the ones graceful shutdown exists to protect.
+    timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:35s}
   application:
     name: ai-platform
   ai:
@@ -117,6 +124,62 @@ spring:
 
 app:
   ai:
+    model:
+      # Model tiering. The two most important lines in this file for cost.
+      #
+      # Calls whose output is read by MACHINE (agent planning, structured
+      # extraction) go to `fast`; calls whose output is read by a PERSON (RAG
+      # answers, agent synthesis, tool explanations, chat) go to `capable`. The
+      # first group is high-volume and gains nothing from a stronger model; the
+      # second is where model capability is visible in the product.
+      #
+      # Setting both to the same value collapses the tiering without any code
+      # change - which is the honest way to A/B whether it costs quality.
+      fast: ${AI_MODEL_FAST:gpt-4o-mini}
+      capable: ${AI_MODEL_CAPABLE:gpt-4o}
+    pricing:
+      # USD per million tokens, so token counts can be reported as spend.
+      #
+      # In configuration rather than in code because prices change and are not
+      # this application's business. A model with no entry here still has its
+      # tokens counted; only its cost is reported as zero, with one warning -
+      # inventing a price would be worse than reporting none.
+      #
+      # Bracket notation because relaxed binding would otherwise mangle a map
+      # key containing hyphens and digits.
+      models:
+        "[gpt-4o-mini]":
+          input-per-million-tokens: ${PRICE_GPT4O_MINI_INPUT:0.15}
+          output-per-million-tokens: ${PRICE_GPT4O_MINI_OUTPUT:0.60}
+          cached-input-per-million-tokens: ${PRICE_GPT4O_MINI_CACHED:0.075}
+        "[gpt-4o]":
+          input-per-million-tokens: ${PRICE_GPT4O_INPUT:2.50}
+          output-per-million-tokens: ${PRICE_GPT4O_OUTPUT:10.00}
+          cached-input-per-million-tokens: ${PRICE_GPT4O_CACHED:1.25}
+    budget:
+      # A per-caller spending ceiling denominated in tokens, which is the unit
+      # that is actually billed - the request-count rate limiter cannot see the
+      # difference between thirty one-line questions and thirty requests that
+      # each stuff 6,000 tokens of document into the context.
+      #
+      # OFF by default, deliberately. A budget set from a guess rejects real
+      # support work at the moment someone needs it. Watch the ai.cost.usd
+      # metrics for a week, then set this from what you see.
+      enabled: ${AI_BUDGET_ENABLED:false}
+      tokens-per-window: ${AI_BUDGET_TOKENS:200000}
+      window-seconds: ${AI_BUDGET_WINDOW_SECONDS:3600}
+    cache:
+      semantic:
+        # Answer caching keyed on the question's EMBEDDING, so paraphrases hit.
+        #
+        # similarity-threshold is the number to be careful with. A semantic
+        # cache that is wrong does not serve a stale answer - it serves the
+        # answer to a DIFFERENT question, fluently, and nothing downstream can
+        # tell. Lower it only with evaluation evidence, never to chase hit rate.
+        enabled: ${SEMANTIC_CACHE_ENABLED:true}
+        similarity-threshold: ${SEMANTIC_CACHE_THRESHOLD:0.95}
+        max-entries-per-scope: ${SEMANTIC_CACHE_MAX_ENTRIES:200}
+        ttl: ${SEMANTIC_CACHE_TTL:2h}
     temperature:
       # One global temperature for every call site was wrong. These six call
       # sites want genuinely different behaviour, and a single knob forced the
@@ -143,14 +206,70 @@ app:
       grounded: ${AI_TEMPERATURE_GROUNDED:0.2}
       deterministic: ${AI_TEMPERATURE_DETERMINISTIC:0.0}
   rag:
-    chunk-size: ${RAG_CHUNK_SIZE:800}
-    chunk-overlap: ${RAG_CHUNK_OVERLAP:100}
+    # Chunking is denominated in TOKENS, not characters. Every limit that
+    # actually binds - the context window, the prompt-size guardrail, the bill -
+    # is measured in tokens, and characters convert at a ratio that swings
+    # between roughly 4:1 for prose and 2:1 for stack traces and config
+    # snippets. A fixed character size therefore made the densest, most
+    # retrieval-worthy chunks in a technical corpus the largest ones.
+    chunk-tokens: ${RAG_CHUNK_TOKENS:220}
+    chunk-overlap-tokens: ${RAG_CHUNK_OVERLAP_TOKENS:40}
     embedding-batch-size: ${RAG_EMBEDDING_BATCH_SIZE:32}
     top-k: ${RAG_TOP_K:5}
+    # Applies to DENSE matches only; a chunk the full-text search found is
+    # admitted on the strength of containing the query's actual terms. Run
+    # POST /api/eval/calibrate-threshold to choose this from the corpus instead
+    # of guessing - that endpoint sweeps it and reports F1 at each value.
     similarity-threshold: ${RAG_SIMILARITY_THRESHOLD:0.5}
+    # Hybrid retrieval: the vector search and a Postgres full-text search run
+    # over the same filtered corpus and are fused by reciprocal rank. They fail
+    # in opposite directions - embeddings smooth away the exact tokens (error
+    # codes, config keys, class names) that a support question is usually built
+    # around, and full-text search cannot tell two phrasings of one concept
+    # apart. The switch exists so an operator can fall back to dense-only
+    # without a deploy.
+    hybrid-enabled: ${RAG_HYBRID_ENABLED:true}
+    # Retrieve wide, rank narrow. Each search contributes topK x this many
+    # candidates, because the result worth having is often the one that placed
+    # mid-table in one search and near the top of the other - and a re-ranker
+    # can only reorder what it was handed.
+    candidate-multiplier: ${RAG_CANDIDATE_MULTIPLIER:4}
+    # The k in reciprocal rank fusion, from the original paper. Large enough
+    # that "near the top of both lists" beats "first in one list", which is the
+    # behaviour running two searches exists to produce.
+    fusion-k: ${RAG_FUSION_K:60}
+    dense-weight: ${RAG_DENSE_WEIGHT:1.0}
+    lexical-weight: ${RAG_LEXICAL_WEIGHT:1.0}
+    # Chunks overlap, so a document matching the query well produces several
+    # near-identical chunks that all match well. Left uncapped, one document
+    # fills the whole top-K with paraphrases of itself and the context window is
+    # spent learning nothing after the first.
+    max-chunks-per-document: ${RAG_MAX_CHUNKS_PER_DOCUMENT:2}
   agent:
-    max-iterations: ${AGENT_MAX_ITERATIONS:5}
+    # One wall-clock budget for the whole agent request, enforced AROUND each
+    # LLM call rather than between steps. The previous between-steps check could
+    # not bound anything: no check ran while a call was in flight, so three
+    # sequential calls could take far longer than this while every check passed.
+    #
+    # max-iterations is gone. It capped capability steps at 5 against a list
+    # that could hold 2 - an unreachable bound that nonetheless read, in config
+    # and in documentation, as the defense against a runaway agent.
     timeout-seconds: ${AGENT_TIMEOUT_SECONDS:30}
+    # Pool size for running one request's independent capability steps
+    # concurrently. Small on purpose: the servlet container already provides
+    # request-level concurrency, and a large pool here mostly buys simultaneous
+    # pressure on a billed, rate-limited provider.
+    max-concurrent-steps: ${AGENT_MAX_CONCURRENT_STEPS:8}
+  eval:
+    # LLM-as-judge, alongside (never instead of) the deterministic scorers.
+    # OFF by default: it adds a billed model call per RAG case and makes the run
+    # non-deterministic, neither of which belongs in the run CI triggers by
+    # habit. The lexical scorers still run either way.
+    llm-judge-enabled: ${EVAL_LLM_JUDGE_ENABLED:false}
+    # A hard ceiling on cases per run. The eval endpoint makes real billed calls
+    # in a loop over a file in this repository; a dataset that grows past what
+    # anyone intended is the ordinary result of several people adding cases.
+    max-cases: ${EVAL_MAX_CASES:200}
   memory:
     max-messages: ${MEMORY_MAX_MESSAGES:20}
     ttl-hours: ${MEMORY_TTL_HOURS:24}
@@ -178,6 +297,17 @@ app:
 
 server:
   port: ${SERVER_PORT:8080}
+  # Graceful shutdown. On SIGTERM the connector stops accepting new connections
+  # and in-flight requests are given time to finish, instead of the JVM
+  # exiting immediately and dropping them.
+  #
+  # This matters more here than in an ordinary web application because of what
+  # an in-flight request IS. A killed request has typically already made one or
+  # more LLM calls: the money is spent, the latency has been paid, and the
+  # caller gets a connection reset for an answer that existed. Across a rolling
+  # deploy that is a burst of paid-for, discarded work and a burst of 502s, on
+  # every deploy, for no reason other than a missing setting.
+  shutdown: graceful
 
 springdoc:
   swagger-ui:
@@ -215,6 +345,7 @@ resilience4j:
           - com.example.aiplatform.exception.PromptTooLargeException
           - com.example.aiplatform.exception.UnauthorizedToolAccessException
           - com.example.aiplatform.exception.ToolExecutionLimitExceededException
+          - com.example.aiplatform.exception.TokenBudgetExceededException
       vectorSearch:
         sliding-window-size: 10
         minimum-number-of-calls: 5
@@ -224,6 +355,13 @@ resilience4j:
 
 management:
   health:
+    # Liveness and readiness as explicit indicators rather than left to the
+    # defaults. The defaults fold every auto-configured health indicator into
+    # readiness, which is how a cache outage becomes a traffic outage.
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
     circuitbreakers:
       # Surfaces breaker state (CLOSED/OPEN/HALF_OPEN) as a health component -
       # an operator hitting /actuator/health can see "the LLM breaker is open"
@@ -238,6 +376,21 @@ management:
       # second, separately-secured endpoint.
       show-details: when-authorized
       show-components: when-authorized
+      probes:
+        # Splits /actuator/health into /health/liveness and /health/readiness.
+        #
+        # The aggregate endpoint answers "is everything healthy", which is the
+        # wrong question for an orchestrator, and answering it caused a specific
+        # failure mode: a Redis blip turned health DOWN, the readiness probe
+        # failed, and the pod was RESTARTED - killing an instance that was
+        # serving requests fine, at the moment the cluster could least afford to
+        # lose one.
+        #
+        # Liveness means "this process is broken beyond recovery, restart it".
+        # Readiness means "route traffic here right now". A degraded dependency
+        # should stop traffic without triggering a restart, and only the split
+        # can express that.
+        enabled: true
   endpoints:
     web:
       exposure:

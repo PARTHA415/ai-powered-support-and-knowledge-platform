@@ -48,6 +48,23 @@ public class SecurityConfig {
                         // (see management.endpoints.web.exposure.include) - actuator's other
                         // endpoints (env, beans, configprops...) stay unavailable entirely.
                         .requestMatchers("/actuator/health", "/actuator/prometheus").permitAll()
+                        // Kubernetes-style probes, split from the aggregate
+                        // health endpoint.
+                        //
+                        // /actuator/health answers "is everything healthy",
+                        // which is the wrong question for an orchestrator and
+                        // answering it caused a specific failure: a Redis blip
+                        // turned health DOWN, the readiness probe failed, and
+                        // the pod was RESTARTED - taking down an instance that
+                        // was serving fine, at the exact moment the cluster
+                        // could least afford to lose one.
+                        //
+                        // Liveness answers "is this process broken beyond
+                        // recovery, restart it". Readiness answers "should
+                        // traffic be routed here right now". A degraded
+                        // dependency should stop traffic, not trigger a
+                        // restart; only the split can express that.
+                        .requestMatchers("/actuator/health/liveness", "/actuator/health/readiness").permitAll()
                         // Uploading knowledge-base content is a staff action, not a customer one.
                         .requestMatchers(HttpMethod.POST, "/api/documents").hasAnyRole("SUPPORT_AGENT", "ADMIN")
                         // Raw embedding generation is an internal/debug tool from Phase 4, not customer-facing.

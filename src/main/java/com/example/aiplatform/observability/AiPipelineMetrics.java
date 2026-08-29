@@ -62,6 +62,39 @@ public class AiPipelineMetrics {
                 .record(count);
     }
 
+    /**
+     * How many of a hybrid search's candidates the full-text half found and the
+     * vector half did not.
+     *
+     * <p>This is the metric that answers "is hybrid retrieval earning its
+     * keep". If it sits at zero, the lexical search is contributing nothing the
+     * vector search was not already finding, and the extra query is pure cost;
+     * if it is consistently non-zero, those are results dense-only retrieval
+     * was silently missing. Either reading is actionable, which is more than
+     * could be said for adding the feature and assuming it helped.
+     */
+    public void recordLexicalOnlyCandidates(int count) {
+        DistributionSummary.builder("rag.hybrid.lexical.only")
+                .description("Candidates found only by the full-text search, not by the vector search")
+                .register(meterRegistry)
+                .record(count);
+    }
+
+    /**
+     * Whether a question was answered from the semantic cache or had to be
+     * computed. Tagged rather than two counters so one panel shows the hit rate
+     * and can be broken down; the hit rate is the number that says whether the
+     * cache is worth its risk, and the risk is real (see
+     * {@link com.example.aiplatform.ai.rag.SemanticAnswerCache}).
+     */
+    public void recordSemanticCacheOutcome(String outcome) {
+        Counter.builder("ai.answer.cache")
+                .description("Semantic answer cache hits and misses")
+                .tag("outcome", outcome)
+                .register(meterRegistry)
+                .increment();
+    }
+
     /** How many capability iterations one agent request actually executed. */
     public void recordAgentIterations(int iterations) {
         DistributionSummary.builder("agent.iterations")

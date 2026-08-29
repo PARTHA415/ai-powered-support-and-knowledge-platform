@@ -28,11 +28,20 @@ USER app
 
 COPY --from=build /build/target/ai-platform-*.jar app.jar
 
-# Actuator's health endpoint (permitAll, see SecurityConfig) is what both
-# this HEALTHCHECK and an orchestrator's own readiness/liveness probe use -
-# one source of truth for "is this instance healthy" (Phase 16).
+# Docker's own HEALTHCHECK asks the LIVENESS probe, not the aggregate health
+# endpoint - and the distinction is the point of splitting them.
+#
+# Docker restarts an unhealthy container. The aggregate endpoint reports DOWN
+# when any dependency is degraded, so wiring a restart to it means a Redis blip
+# kills an instance that was serving requests fine, at the moment the deployment
+# could least afford to lose one. Liveness answers the question a restarter
+# should be asking: is this process broken beyond recovery?
+#
+# Readiness (/actuator/health/readiness) is the one a load balancer or
+# orchestrator should route on - it goes down for a degraded dependency, which
+# stops traffic without killing anything.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=3 \
-    CMD wget -q -O- http://localhost:8080/actuator/health | grep -q '"status":"UP"' || exit 1
+    CMD wget -q -O- http://localhost:8080/actuator/health/liveness | grep -q '"status":"UP"' || exit 1
 
 EXPOSE 8080
 

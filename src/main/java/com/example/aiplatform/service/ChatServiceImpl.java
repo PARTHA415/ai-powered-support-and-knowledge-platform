@@ -7,7 +7,7 @@ import com.example.aiplatform.ai.structured.SupportAnswerConverter;
 import com.example.aiplatform.model.ChatResponse;
 import com.example.aiplatform.model.SupportAnswer;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.beans.factory.annotation.Value;
+import reactor.core.publisher.Flux;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -17,18 +17,15 @@ public class ChatServiceImpl implements ChatService {
     private final PromptBuilder promptBuilder;
     private final SupportAnswerConverter supportAnswerConverter;
     private final PromptInjectionGuard promptInjectionGuard;
-    private final String model;
 
     public ChatServiceImpl(LlmClientService llmClientService,
                             PromptBuilder promptBuilder,
                             SupportAnswerConverter supportAnswerConverter,
-                            PromptInjectionGuard promptInjectionGuard,
-                            @Value("${spring.ai.openai.chat.options.model}") String model) {
+                            PromptInjectionGuard promptInjectionGuard) {
         this.llmClientService = llmClientService;
         this.promptBuilder = promptBuilder;
         this.supportAnswerConverter = supportAnswerConverter;
         this.promptInjectionGuard = promptInjectionGuard;
-        this.model = model;
     }
 
     @Override
@@ -36,7 +33,23 @@ public class ChatServiceImpl implements ChatService {
         promptInjectionGuard.assertSafe(message);
         Prompt prompt = promptBuilder.buildSupportPrompt(message);
         String answer = llmClientService.generate(prompt);
-        return new ChatResponse(answer, model);
+        return new ChatResponse(answer, llmClientService.modelName());
+    }
+
+    /**
+     * Note what still runs and what does not. The input guardrail runs first,
+     * exactly as on the buffered path - a prompt-injection attempt is rejected
+     * before a single token is generated, and rejecting early is if anything
+     * more important here, because a stream cannot be taken back. The OUTPUT
+     * guardrail does not run; see {@link ChatService#answerStreaming} and
+     * {@code LlmClientService.generateStream} for why, and for what it would
+     * take to change that.
+     */
+    @Override
+    public Flux<String> answerStreaming(String message) {
+        promptInjectionGuard.assertSafe(message);
+        Prompt prompt = promptBuilder.buildSupportPrompt(message);
+        return llmClientService.generateStream(prompt);
     }
 
     @Override

@@ -6,7 +6,6 @@ import com.example.aiplatform.ai.prompt.PromptBuilder;
 import com.example.aiplatform.ai.tools.SupportTools;
 import com.example.aiplatform.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
@@ -27,18 +26,15 @@ public class SupportAssistantServiceImpl implements SupportAssistantService {
     private final LlmClientService llmClientService;
     private final SupportTools supportTools;
     private final PromptInjectionGuard promptInjectionGuard;
-    private final String model;
 
     public SupportAssistantServiceImpl(PromptBuilder promptBuilder,
                                         LlmClientService llmClientService,
                                         SupportTools supportTools,
-                                        PromptInjectionGuard promptInjectionGuard,
-                                        @Value("${spring.ai.openai.chat.options.model}") String model) {
+                                        PromptInjectionGuard promptInjectionGuard) {
         this.promptBuilder = promptBuilder;
         this.llmClientService = llmClientService;
         this.supportTools = supportTools;
         this.promptInjectionGuard = promptInjectionGuard;
-        this.model = model;
     }
 
     @Override
@@ -46,6 +42,6 @@ public class SupportAssistantServiceImpl implements SupportAssistantService {
         promptInjectionGuard.assertSafe(message);
         Prompt prompt = promptBuilder.buildToolsSupportPrompt(message);
         String answer = llmClientService.generateWithTools(prompt, supportTools);
-        return new ChatResponse(answer, model);
+        return new ChatResponse(answer, llmClientService.modelName());
     }
 }

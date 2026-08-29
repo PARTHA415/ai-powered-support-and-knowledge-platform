@@ -87,6 +87,19 @@ public class GlobalExceptionHandler {
                 .body(ErrorResponse.of(HttpStatus.TOO_MANY_REQUESTS.value(), "Too Many Requests", ex.getMessage()));
     }
 
+    /**
+     * 429, the same status as the request-count limiter and the tool-call cap.
+     * All three say the same thing to a client - you may retry later, this is
+     * about you and not about the service - and giving them one status keeps
+     * client retry logic from having to distinguish between three flavours of
+     * "you have had enough for now".
+     */
+    @ExceptionHandler(TokenBudgetExceededException.class)
+    public ResponseEntity<ErrorResponse> handleTokenBudgetExceeded(TokenBudgetExceededException ex) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .body(ErrorResponse.of(HttpStatus.TOO_MANY_REQUESTS.value(), "Too Many Requests", ex.getMessage()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnexpected(Exception ex) {
         log.error("Unhandled exception", ex);

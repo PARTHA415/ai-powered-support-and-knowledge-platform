@@ -53,6 +53,23 @@ public class RedisFixedWindowRateLimiter {
             return count
             """, Long.class);
 
+    /**
+     * KEYS[1] the counter key, ARGV[1] the amount to add, ARGV[2] the window
+     * length in seconds. The INCRBY sibling of the script above, for budgets
+     * denominated in something other than "one request" - token spend, in
+     * practice. Same atomicity guarantee and the same reason for it: the TTL is
+     * set on the call that created the key, so a process dying between the two
+     * commands cannot leave a caller counted against forever.
+     */
+    private static final RedisScript<Long> ADD_SCRIPT = new DefaultRedisScript<>(
+            """
+            local total = redis.call('INCRBY', KEYS[1], ARGV[1])
+            if total == tonumber(ARGV[1]) then
+              redis.call('EXPIRE', KEYS[1], ARGV[2])
+            end
+            return total
+            """, Long.class);
+
     private final StringRedisTemplate redisTemplate;
 
     public RedisFixedWindowRateLimiter(StringRedisTemplate redisTemplate) {
@@ -78,6 +95,29 @@ public class RedisFixedWindowRateLimiter {
             return true;
         }
         return count == null || count <= limit;
+    }
+
+    /**
+     * Adds {@code amount} to {@code key}'s window and returns the new total.
+     *
+     * <p>Fails OPEN the same way {@link #tryAcquire} does, and reports 0 when
+     * it does - an unreachable Redis must degrade to "unmetered", never to
+     * "everyone is over budget". Note the asymmetry that makes this safe: a
+     * failed <em>record</em> under-counts spend, while a failed <em>check</em>
+     * would over-reject requests, and only one of those is recoverable by
+     * looking at the bill afterwards.
+     */
+    public long addAndGet(String key, long amount, int windowSeconds) {
+        if (amount <= 0) {
+            return currentCount(key);
+        }
+        try {
+            Long total = redisTemplate.execute(
+                    ADD_SCRIPT, List.of(key), Long.toString(amount), Integer.toString(windowSeconds));
+            return total == null ? 0 : total;
+        } catch (RuntimeException e) {
+            return 0;
+        }
     }
 
     /** Current count without incrementing - for checks that must not consume budget. */

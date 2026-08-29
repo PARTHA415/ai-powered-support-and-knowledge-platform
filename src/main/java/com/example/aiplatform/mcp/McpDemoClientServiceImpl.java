@@ -15,7 +15,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.mcp.SyncMcpToolCallbackProvider;
 import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -53,18 +52,15 @@ public class McpDemoClientServiceImpl implements McpDemoClientService {
     private final LlmClientService llmClientService;
     private final PromptInjectionGuard promptInjectionGuard;
     private final McpDemoClientProperties properties;
-    private final String model;
 
     public McpDemoClientServiceImpl(PromptBuilder promptBuilder,
                                      LlmClientService llmClientService,
                                      PromptInjectionGuard promptInjectionGuard,
-                                     McpDemoClientProperties properties,
-                                     @Value("${spring.ai.openai.chat.options.model}") String model) {
+                                     McpDemoClientProperties properties) {
         this.promptBuilder = promptBuilder;
         this.llmClientService = llmClientService;
         this.promptInjectionGuard = promptInjectionGuard;
         this.properties = properties;
-        this.model = model;
     }
 
     @Override
@@ -92,7 +88,7 @@ public class McpDemoClientServiceImpl implements McpDemoClientService {
             Prompt prompt = promptBuilder.buildToolsSupportPrompt(message);
             String answer = llmClientService.generateWithTools(prompt, mcpTools);
 
-            return new McpAssistantResponse(answer, model, discoveredTools);
+            return new McpAssistantResponse(answer, llmClientService.modelName(), discoveredTools);
         } catch (RuntimeException e) {
             log.error("MCP client round trip failed", e);
             throw new LlmIntegrationException("Failed to complete the MCP-routed request", e);

@@ -166,6 +166,72 @@
       "targets": [
         { "expr": "sum(increase(ai_safety_bound_triggered_total[15m])) by (reason)", "legendFormat": "{{reason}}" }
       ]
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "Cost & Caching",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 },
+      "collapsed": false
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Spend per hour, by model tier",
+      "description": "ai.cost.usd - token counts converted to money using app.ai.pricing. Tokens are not comparable across models, so this is the only view that shows whether model tiering is actually working: the fast tier should carry most of the call volume and a small fraction of the spend. A fast-tier line that starts tracking the capable one means something has been quietly repointed at the expensive model.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(ai_cost_usd_total[15m])) by (tier) * 3600", "legendFormat": "{{tier}}" }
+      ]
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "Tokens by tier and type",
+      "description": "ai.tokens - split into prompt, prompt_cached and completion. prompt_cached is the only evidence that provider-side prompt caching is working; if it stays at zero the stable system-prefix ordering is not being rewarded and the persona is being paid for on every request.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(ai_tokens_total[15m])) by (tier, type)", "legendFormat": "{{tier}} {{type}}" }
+      ]
+    },
+    {
+      "id": 43,
+      "type": "stat",
+      "title": "Semantic answer cache hit rate",
+      "description": "ai.answer.cache - a hit skips retrieval AND generation entirely. This is the number that says whether the cache is worth the risk it carries: a semantic cache that is wrong does not return a stale answer, it returns the answer to a different question. Watch it alongside the similarity threshold, and never raise the hit rate by lowering the threshold without evaluation evidence.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 45 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(ai_answer_cache_total{outcome=\"hit\"}[15m])) / sum(rate(ai_answer_cache_total[15m]))", "legendFormat": "hit rate" }
+      ]
+    },
+    {
+      "id": 44,
+      "type": "stat",
+      "title": "Candidates found only by the lexical search",
+      "description": "rag.hybrid.lexical.only - results the full-text half surfaced and the vector half did not. This is whether hybrid retrieval is earning its second query: consistently zero means the lexical search is contributing nothing dense retrieval was not already finding; consistently non-zero means these are results dense-only retrieval was silently missing.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 45 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(rag_hybrid_lexical_only_sum[15m]) / rate(rag_hybrid_lexical_only_count[15m])", "legendFormat": "avg per search" }
+      ]
+    },
+    {
+      "id": 45,
+      "type": "timeseries",
+      "title": "Spend per hour, by model",
+      "description": "The same spend broken down by the model the PROVIDER reported rather than the one requested - an alias resolving to a dated snapshot shows up here and not in the tier view.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 45 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(rate(ai_cost_usd_total[15m])) by (model) * 3600", "legendFormat": "{{model}}" }
+      ]
     }
   ]
 }

@@ -4,11 +4,13 @@ import com.example.aiplatform.ai.guardrails.PatternBasedPromptInjectionGuard;
 import com.example.aiplatform.ai.guardrails.PromptInjectionGuard;
 import com.example.aiplatform.ai.llm.LlmClientService;
 import com.example.aiplatform.ai.prompt.PromptBuilder;
+import com.example.aiplatform.ai.rag.CitationValidator;
 import com.example.aiplatform.ai.rag.SemanticSearchService;
 import com.example.aiplatform.ai.structured.AgentPlanConverter;
 import com.example.aiplatform.ai.tools.SupportTools;
 import com.example.aiplatform.config.AgentProperties;
 import com.example.aiplatform.config.RagProperties;
+import com.example.aiplatform.config.TestRagProperties;
 import com.example.aiplatform.exception.LlmIntegrationException;
 import com.example.aiplatform.exception.PromptInjectionException;
 import com.example.aiplatform.model.AgentPlan;
@@ -34,6 +36,9 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
 
 import java.util.List;
+import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -58,8 +63,8 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class AgentServiceImplTest {
 
-    private static final RagProperties RAG_PROPERTIES = new RagProperties(800, 100, 32, 5, 0.5);
-    private static final AgentProperties DEFAULT_AGENT_PROPERTIES = new AgentProperties(5, 30);
+    private static final RagProperties RAG_PROPERTIES = TestRagProperties.defaults();
+    private static final AgentProperties DEFAULT_AGENT_PROPERTIES = new AgentProperties(30, 4);
     private static final String QUESTION = "What's the status of order ORD-1001?";
     private static final String CUSTOMER_ID = "CUST-1001";
     private static final String CONVERSATION_ID = "conv-1";
@@ -81,6 +86,50 @@ class AgentServiceImplTest {
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
     private final AiPipelineMetrics aiPipelineMetrics = new AiPipelineMetrics(meterRegistry);
 
+    /**
+     * A direct executor, so the capability steps run on the calling thread and
+     * the tests stay deterministic. What is being asserted here is the
+     * workflow's shape - which steps ran, in what order, with what recorded -
+     * not the thread they ran on, and a real pool would make the assertions
+     * flaky without making them stronger. Concurrency itself is covered where
+     * it actually matters: {@code ToolExecutionGuardTest} proves the tool budget
+     * is shared across threads working on one request.
+     */
+    private final ExecutorService agentStepExecutor = new AbstractExecutorService() {
+        private volatile boolean shutdown;
+
+        @Override
+        public void execute(Runnable command) {
+            command.run();
+        }
+
+        @Override
+        public void shutdown() {
+            shutdown = true;
+        }
+
+        @Override
+        public List<Runnable> shutdownNow() {
+            shutdown = true;
+            return List.of();
+        }
+
+        @Override
+        public boolean isShutdown() {
+            return shutdown;
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return shutdown;
+        }
+
+        @Override
+        public boolean awaitTermination(long timeout, TimeUnit unit) {
+            return true;
+        }
+    };
+
     @BeforeEach
     void authenticateAsCustomer() {
         TestPrincipals.authenticateAs(TestPrincipals.customer(CUSTOMER_ID));
@@ -93,8 +142,8 @@ class AgentServiceImplTest {
 
     private AgentServiceImpl newService(AgentProperties agentProperties) {
         return new AgentServiceImpl(promptBuilder, llmClientService, agentPlanConverter, semanticSearchService,
-                supportTools, chatMemory, RAG_PROPERTIES, agentProperties, promptInjectionGuard, aiPipelineMetrics,
-                "gpt-4o-mini");
+                supportTools, chatMemory, RAG_PROPERTIES, agentProperties, promptInjectionGuard,
+                new CitationValidator(aiPipelineMetrics), aiPipelineMetrics, agentStepExecutor);
     }
 
     // chatMemory.get(...) is left unstubbed in most tests below - Mockito's
@@ -115,6 +164,12 @@ class AgentServiceImplTest {
         when(promptBuilder.buildAgentFinalPrompt(eq(QUESTION), anyString())).thenReturn(finalPrompt);
         when(llmClientService.generate(finalPrompt)).thenReturn(answer);
         return finalPrompt;
+    }
+
+    private void stubToolRound(String answer) {
+        Prompt toolsPrompt = new Prompt(new UserMessage("tools"));
+        when(promptBuilder.buildToolsSupportPrompt(QUESTION)).thenReturn(toolsPrompt);
+        when(llmClientService.generateWithTools(toolsPrompt, supportTools)).thenReturn(answer);
     }
 
     // --- path: knowledge base only ---
@@ -261,7 +316,7 @@ class AgentServiceImplTest {
         assertThat(kbStep.success()).isFalse();
         ArgumentCaptor<String> evidenceCaptor = ArgumentCaptor.forClass(String.class);
         verify(promptBuilder).buildAgentFinalPrompt(eq(QUESTION), evidenceCaptor.capture());
-        assertThat(evidenceCaptor.getValue()).contains("search failed and was skipped");
+        assertThat(evidenceCaptor.getValue()).contains("KNOWLEDGE_BASE: failed and was skipped");
     }
 
     // --- failure handling: business tool step fails ---
@@ -283,42 +338,53 @@ class AgentServiceImplTest {
         assertThat(toolStep.success()).isFalse();
     }
 
-    // --- safety bound: max iterations ---
+    // --- capability execution ---
 
+    /**
+     * Both planned capabilities run. They are independent - one queries the
+     * vector store, the other calls the LLM with tools - and used to run
+     * strictly in sequence for no reason other than the loop that drove them.
+     */
     @Test
-    void maxIterationsCapStopsExecutionBeforeSecondCapability() {
+    void bothPlannedCapabilitiesRunAndBothContributeEvidence() {
         stubPlanning(new AgentPlan("needs both", true, true));
         when(semanticSearchService.search(QUESTION, RAG_PROPERTIES.topK()))
                 .thenReturn(List.of(new SemanticSearchResult("Doc", "content", 0.9)));
-        stubFinalize("Partial answer.");
+        stubToolRound("Order ORD-1001 is SHIPPED.");
+        stubFinalize("Your order is shipped.");
 
-        AgentServiceImpl service = newService(new AgentProperties(1, 30));
-        AgentResponse response = service.handle(CONVERSATION_ID, QUESTION);
+        AgentResponse response = newService(DEFAULT_AGENT_PROPERTIES).handle(CONVERSATION_ID, QUESTION);
 
-        assertThat(response.auditTrail().maxIterationsExceeded()).isTrue();
-        assertThat(capabilities(response))
-                .containsExactly("MEMORY_RETRIEVAL", "PLANNING", "KNOWLEDGE_BASE", "FINALIZE", "MEMORY_SAVE");
-        verify(llmClientService, never()).generateWithTools(any(), any(Object[].class));
-        assertThat(meterRegistry.get("ai.safety.bound.triggered")
-                .tag("reason", "agent_max_iterations_exceeded").counter().count()).isEqualTo(1.0);
-        assertThat(meterRegistry.get("agent.iterations").summary().count()).isEqualTo(1);
+        assertThat(capabilities(response)).contains("KNOWLEDGE_BASE", "BUSINESS_TOOL");
+        assertThat(findStep(response, "KNOWLEDGE_BASE").success()).isTrue();
+        assertThat(findStep(response, "BUSINESS_TOOL").success()).isTrue();
+        assertThat(meterRegistry.get("agent.iterations").summary().totalAmount()).isEqualTo(2.0);
     }
 
-    // --- safety bound: timeout ---
+    // --- safety bound: the request deadline ---
 
+    /**
+     * An exhausted deadline stops the workflow spending anything further, and
+     * the request still returns an answer rather than a 500.
+     *
+     * <p>Both halves matter. Refusing to start new work is the bound doing its
+     * job; still answering is the reason synthesis carries a floor
+     * ({@code MIN_SYNTHESIS_BUDGET_MILLIS}) - failing here would discard
+     * evidence the platform had already paid for and hand the caller nothing.
+     */
     @Test
-    void timeoutStopsAllCapabilityExecution() {
-        stubPlanning(new AgentPlan("needs both", true, true));
-        stubFinalize("Answered without gathering evidence due to timeout.");
+    void anExhaustedDeadlineStopsFurtherWorkButStillProducesAnAnswer() {
+        stubFinalize("I could not gather any evidence in time.");
 
-        // Any nonzero elapsed wall-clock time exceeds a zero-second budget,
-        // so the very first capability-loop check trips the timeout - a
-        // deterministic way to exercise this path without sleeps.
-        AgentServiceImpl service = newService(new AgentProperties(5, 0.0));
+        // A zero-second budget is expired the instant it is created, which
+        // exercises this path deterministically and without sleeping.
+        AgentServiceImpl service = newService(new AgentProperties(0.0, 4));
         AgentResponse response = service.handle(CONVERSATION_ID, QUESTION);
 
-        assertThat(response.auditTrail().timedOut()).isTrue();
-        assertThat(capabilities(response)).containsExactly("MEMORY_RETRIEVAL", "PLANNING", "FINALIZE", "MEMORY_SAVE");
+        assertThat(response.answer()).isEqualTo("I could not gather any evidence in time.");
+        assertThat(capabilities(response))
+                .containsExactly("MEMORY_RETRIEVAL", "PLANNING", "FINALIZE", "MEMORY_SAVE");
+        assertThat(findStep(response, "PLANNING").success()).isFalse();
         verify(semanticSearchService, never()).search(any(), any(Integer.class));
         verify(llmClientService, never()).generateWithTools(any(), any(Object[].class));
         assertThat(meterRegistry.get("ai.safety.bound.triggered")
