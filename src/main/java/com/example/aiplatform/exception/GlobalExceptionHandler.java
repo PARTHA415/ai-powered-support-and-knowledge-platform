@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -21,6 +22,28 @@ public class GlobalExceptionHandler {
                 .orElse("Invalid request");
         return ResponseEntity.badRequest()
                 .body(ErrorResponse.of(HttpStatus.BAD_REQUEST.value(), "Bad Request", message));
+    }
+
+    /**
+     * A request body Jackson could not parse at all - truncated JSON, a
+     * mismatched type, an empty body on a {@code @RequestBody} endpoint.
+     *
+     * <p>Without this handler the exception reaches the {@code Exception}
+     * catch-all below and the caller gets a 500. That is wrong twice over: it
+     * tells the client the server broke when the client sent bad input, and it
+     * files a client mistake under server errors in the metrics, where a burst
+     * of malformed requests looks exactly like an outage.
+     *
+     * <p>The parser's own message is deliberately not returned - it quotes the
+     * offending bytes, which echoes attacker-supplied content back and can
+     * expose internal field names.
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleUnreadableBody(HttpMessageNotReadableException ex) {
+        log.debug("Rejected unparseable request body: {}", ex.getMessage());
+        return ResponseEntity.badRequest()
+                .body(ErrorResponse.of(HttpStatus.BAD_REQUEST.value(), "Bad Request",
+                        "Malformed request body: expected valid JSON"));
     }
 
     @ExceptionHandler(LlmIntegrationException.class)

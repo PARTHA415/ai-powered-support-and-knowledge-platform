@@ -220,7 +220,28 @@ app:
     # admitted on the strength of containing the query's actual terms. Run
     # POST /api/eval/calibrate-threshold to choose this from the corpus instead
     # of guessing - that endpoint sweeps it and reports F1 at each value.
-    similarity-threshold: ${RAG_SIMILARITY_THRESHOLD:0.5}
+    #
+    # 0.4 is calibrated, not guessed. The sweep over the evaluation corpus:
+    #
+    #   threshold   precision   recall   F1
+    #   0.35        0.889       1.000    0.941
+    #   0.40        0.917       1.000    0.957   <- best
+    #   0.45        0.750       0.833    0.789
+    #   0.50        0.750       0.833    0.789   (the previous value)
+    #   0.60        0.500       0.500    0.500
+    #
+    # The old 0.5 sat just past a cliff: recall falls from 1.00 to 0.83 between
+    # 0.40 and 0.45. The case that exposed it was the paraphrase "I forgot my
+    # login credentials, what should I do?" against a "Password Reset Guide"
+    # chunk - dense similarity 0.381, with no lexical overlap to rescue it, so
+    # the one relevant chunk was filtered out before the prompt was built and
+    # the model correctly answered that it had been given nothing. The direct
+    # phrasing of the same question scores 0.617, which is why this never showed
+    # up in manual testing.
+    #
+    # Re-run the calibration after any meaningful change to the corpus or the
+    # embedding model - this number is a property of those, not a constant.
+    similarity-threshold: ${RAG_SIMILARITY_THRESHOLD:0.4}
     # Hybrid retrieval: the vector search and a Postgres full-text search run
     # over the same filtered corpus and are fused by reciprocal rank. They fail
     # in opposite directions - embeddings smooth away the exact tokens (error

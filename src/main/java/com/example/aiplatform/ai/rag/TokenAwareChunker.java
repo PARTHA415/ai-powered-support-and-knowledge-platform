@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tokenizer.JTokkitTokenCountEstimator;
 import org.springframework.ai.tokenizer.TokenCountEstimator;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -82,10 +83,19 @@ public class TokenAwareChunker {
     private final RagProperties ragProperties;
     private final TokenCountEstimator tokenCountEstimator;
 
+    /**
+     * The constructor Spring uses. {@code @Autowired} is required, not
+     * decorative: the test-only constructor below makes this a multi-constructor
+     * class, and with two candidates and no annotation Spring cannot choose
+     * either - it falls back to a no-arg constructor that does not exist and
+     * fails context startup with "No default constructor found".
+     */
+    @Autowired
     public TokenAwareChunker(RagProperties ragProperties) {
         this(ragProperties, new JTokkitTokenCountEstimator());
     }
 
+    /** Test seam: lets a unit test supply a deterministic token counter. */
     TokenAwareChunker(RagProperties ragProperties, TokenCountEstimator tokenCountEstimator) {
         this.ragProperties = ragProperties;
         this.tokenCountEstimator = tokenCountEstimator;

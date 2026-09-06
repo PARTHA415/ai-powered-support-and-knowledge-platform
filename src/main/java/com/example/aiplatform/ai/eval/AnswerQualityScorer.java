@@ -132,16 +132,75 @@ final class AnswerQualityScorer {
      * away would hide that.
      */
     static double answerCorrectness(String answer, List<String> requiredFacts, List<String> forbiddenFacts) {
-        String lower = answer.toLowerCase();
-        boolean containsForbidden = forbiddenFacts.stream().anyMatch(fact -> lower.contains(fact.toLowerCase()));
+        boolean containsForbidden = forbiddenFacts.stream().anyMatch(fact -> mentions(answer, fact, true));
         if (containsForbidden) {
             return 0.0;
         }
         if (requiredFacts.isEmpty()) {
             return 1.0;
         }
-        long matched = requiredFacts.stream().filter(fact -> lower.contains(fact.toLowerCase())).count();
+        long matched = requiredFacts.stream().filter(fact -> mentions(answer, fact, false)).count();
         return (double) matched / requiredFacts.size();
+    }
+
+    /**
+     * Does {@code answer} actually assert {@code fact}?
+     *
+     * <p>Replaces a plain {@code answer.toLowerCase().contains(fact.toLowerCase())},
+     * which failed a correct answer in a way worth recording. For the payment
+     * case the required fact is {@code PENDING} and {@code PAID} is forbidden;
+     * the assistant answered:
+     *
+     * <pre>The payment status for order ORD-1002 is "PENDING", and no amount
+     * has been paid yet.</pre>
+     *
+     * That is right in both respects, but lowercased substring matching found
+     * "paid" inside the ordinary English "has been paid yet" and collapsed the
+     * score to 0. The eval reported a correct answer as wrong, every run.
+     *
+     * <p><b>Word boundaries</b> apply to both kinds of fact, so a fact never
+     * matches inside a longer word ({@code PAID} must not fire on "prepaid").
+     *
+     * <p><b>Casing is treated asymmetrically</b>, because the two kinds of fact
+     * fail in opposite directions:
+     *
+     * <ul>
+     *   <li><b>Forbidden</b> facts ({@code strictCase = true}) match
+     *       case-sensitively when written ALL-CAPS. The datasets write status
+     *       values as enum tokens ({@code PAID}, {@code PENDING}), and the
+     *       casing is exactly what separates a value quoted from business data
+     *       from the same letters used as ordinary prose. Boundaries alone do
+     *       not help here: "paid" in "has been paid" IS a standalone word, so
+     *       {@code \bpaid\b} still matches it.</li>
+     *   <li><b>Required</b> facts ({@code strictCase = false}) always match
+     *       case-insensitively. An assistant writing {@code The status is
+     *       "Shipped."} has stated the required fact {@code SHIPPED}; demanding
+     *       the model preserve upstream enum casing in prose fails correct
+     *       answers. A first attempt at this fix applied strict casing to both
+     *       and broke exactly that case.</li>
+     * </ul>
+     *
+     * <p>The asymmetry follows the cost of each error: a false positive on a
+     * forbidden fact zeroes an otherwise correct answer, while being permissive
+     * about the casing of a required fact costs nothing - the fact is either
+     * stated or it is not.
+     *
+     * <p>Mixed- or lower-case facts (e.g. {@code "out of stock"}) are always
+     * case-insensitive; they are phrases rather than enum values.
+     */
+    private static boolean mentions(String answer, String fact, boolean strictCase) {
+        String trimmed = fact.strip();
+        if (trimmed.isEmpty()) {
+            return false;
+        }
+        // "ALL-CAPS" means at least one letter and no lowercase ones - so "42"
+        // is not treated as a case-sensitive enum token.
+        boolean enumLikeToken = trimmed.chars().anyMatch(Character::isUpperCase)
+                && trimmed.chars().noneMatch(Character::isLowerCase);
+        int flags = (strictCase && enumLikeToken) ? 0 : Pattern.CASE_INSENSITIVE;
+        return Pattern.compile("\\b" + Pattern.quote(trimmed) + "\\b", flags)
+                .matcher(answer)
+                .find();
     }
 
     /**
@@ -152,8 +211,10 @@ final class AnswerQualityScorer {
      * credit for "mostly honest, but invented one specific detail."
      */
     static double hallucinationScore(String answer, List<String> forbiddenFabrications) {
-        String lower = answer.toLowerCase();
-        boolean fabricated = forbiddenFabrications.stream().anyMatch(detail -> lower.contains(detail.toLowerCase()));
+        // Same matching rule as answerCorrectness - see mentions(). This check
+        // had the identical substring flaw, and a false "hallucination detected"
+        // is the more damaging direction of error: it accuses an honest answer.
+        boolean fabricated = forbiddenFabrications.stream().anyMatch(detail -> mentions(answer, detail, true));
         return fabricated ? 0.0 : 1.0;
     }
 }
