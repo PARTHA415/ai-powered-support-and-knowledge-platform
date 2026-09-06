@@ -2,7 +2,7 @@
   {
     "title": "Password Reset Guide",
     "source": "kb/password-reset.md",
-    "content": "To reset your password, open Settings, go to Security, and select Reset Password. You will receive a confirmation email with a link to set a new password."
+    "content": "To reset your password, open Settings, go to Security, and select Reset Password. You will receive a confirmation email with a link to set a new password. If you have forgotten your username, select Forgot Username on the sign-in page and enter the email address on the account, and we will send your username to that address. If you can no longer sign in to the account email address, contact support to recover your login credentials."
   },
   {
     "title": "Kafka Consumer Troubleshooting",

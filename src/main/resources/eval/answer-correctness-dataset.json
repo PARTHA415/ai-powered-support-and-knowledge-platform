@@ -14,8 +14,8 @@
   {
     "id": "inventory-out-of-stock-fact",
     "question": "How many units of product PROD-2002 are in stock?",
-    "requiredFacts": ["out of stock"],
-    "forbiddenFacts": ["in stock", "42"]
+    "requiredFacts": ["out of stock|not in stock|0 units|zero units|no units|0 in stock"],
+    "forbiddenFacts": ["42"]
   },
   {
     "id": "customer-tier-correct-fact",

@@ -10,6 +10,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Deterministic, mechanical scoring of retrieval and answer quality - no LLM
@@ -25,6 +26,37 @@ final class AnswerQualityScorer {
 
     private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(\\d+)]");
     private static final int MIN_WORD_LENGTH = 4;
+
+    /** Splits a dataset fact into the alternative wordings it accepts - see {@link #mentions}. */
+    private static final Pattern ALTERNATIVE_SEPARATOR = Pattern.compile("\\|");
+
+    /**
+     * Words that carry no claim, so their presence or absence says nothing
+     * about whether an answer is grounded - see {@link #groundednessScore}.
+     * Only words of {@link #MIN_WORD_LENGTH} or longer need listing; shorter
+     * ones never reach the comparison. Stored as stems, and looked up as
+     * stems, so one entry covers a word's inflections ("cause" also removes
+     * "causes" and "causing").
+     *
+     * <p>The line to hold: generic English, never domain vocabulary. Adding
+     * "consumer" or "timeout" here would make the metric congratulate itself -
+     * every word that could evidence a fabrication would have been excluded
+     * from the check before it ran.
+     */
+    private static final Set<String> STOPWORD_STEMS = Stream.of(
+            "about", "address", "after", "again", "also", "another", "because", "been", "before", "being",
+            "both", "cannot", "cause", "come", "consider", "could", "does", "done", "down", "during",
+            "each", "else", "ensure", "even", "every", "find", "first", "following", "from", "further",
+            "give", "given", "good", "have", "help", "here", "however", "indeed", "into", "issue",
+            "just", "kind", "know", "less", "like", "likely", "made", "make", "many", "more",
+            "might", "most", "much", "must", "need", "next", "note", "occur", "often", "only", "other",
+            "over", "pace", "part", "perhaps", "please", "possible", "problem", "provide", "rather", "really",
+            "same", "several", "should", "similar", "simply", "since", "some", "something", "such", "sure",
+            "take", "than", "that", "their", "them", "then", "there", "these", "they", "thing",
+            "this", "those", "through", "thus", "time", "together", "toward", "under", "until", "upon",
+            "used", "using", "very", "want", "well", "were", "what", "when", "where", "whether",
+            "which", "while", "will", "with", "within", "without", "would", "your"
+    ).map(AnswerQualityScorer::stem).collect(Collectors.toUnmodifiableSet());
 
     private AnswerQualityScorer() {
     }
@@ -74,26 +106,97 @@ final class AnswerQualityScorer {
      * "restart the consumer" into "never restart the consumer" would score
      * identically here). True groundedness checking needs semantic entailment
      * (an NLI model or LLM judge), not word overlap - see Phase 15.
+     *
+     * <p><b>Only content words count, and they are compared as stems.</b> The
+     * first version of this compared raw words, and it scored a correct,
+     * well-sourced Kafka answer at 0.5 against a 0.7 bar. Of the 19 words it
+     * called unsupported, not one was a technical claim - they were
+     * {@code address}, {@code consider}, {@code indeed}, {@code issue},
+     * {@code might}, {@code problem}, {@code this}, {@code which} and the like,
+     * plus three that WERE in the source in another form ({@code grow} against
+     * the source's "grows", {@code raising} against "Raise", {@code adding}
+     * against "add"). Every domain token - poll, records, partitions,
+     * consumers, producer - was already present. The metric was measuring
+     * prose style, and punishing the model for writing a sentence instead of
+     * copying a runbook fragment.
+     *
+     * <p>That mattered for a reason beyond the one score: a case that is red on
+     * every run cannot detect anything. Had the answer later begun genuinely
+     * fabricating, the score would have slid from 0.5 to 0.3 and the report
+     * would still just have said "fail" - the case had no signal left to give.
+     * A permanently red test is a dead test.
+     *
+     * <p>Stemming is deliberately crude (suffix stripping, not Porter) and both
+     * sides go through the identical pipeline, so the failure mode is two
+     * distinct words colliding on one stem - which inflates a score slightly -
+     * rather than the same word being counted as unsupported twice over.
      */
     static double groundednessScore(String answer, List<SemanticSearchResult> sources) {
         if (sources.isEmpty()) {
             return 1.0;
         }
-        Set<String> contextWords = sources.stream()
-                .flatMap(source -> Arrays.stream(source.content().toLowerCase().split("\\W+")))
-                .filter(word -> word.length() >= MIN_WORD_LENGTH)
+        Set<String> contextStems = sources.stream()
+                .flatMap(source -> contentStems(source.content()))
                 .collect(Collectors.toSet());
 
-        List<String> answerWords = Arrays.stream(answer.toLowerCase().split("\\W+"))
-                .filter(word -> word.length() >= MIN_WORD_LENGTH)
-                .distinct()
-                .toList();
-        if (answerWords.isEmpty()) {
+        List<String> answerStems = contentStems(answer).distinct().toList();
+        // An answer made entirely of stopwords asserts nothing to verify.
+        if (answerStems.isEmpty()) {
             return 1.0;
         }
 
-        long grounded = answerWords.stream().filter(contextWords::contains).count();
-        return (double) grounded / answerWords.size();
+        long grounded = answerStems.stream().filter(contextStems::contains).count();
+        return (double) grounded / answerStems.size();
+    }
+
+    /**
+     * The claim-bearing stems of a passage: stemmed so inflections match, long
+     * enough to be unambiguous, and with the function and filler words removed.
+     * Both the answer and the context are reduced this way before they are
+     * compared.
+     *
+     * <p>Order matters, and getting it wrong is subtle. Filtering by length
+     * BEFORE stemming drops the runbook's three-letter "add" from the context
+     * while keeping the answer's "adding" - which then stems to "add" and can
+     * never match anything, penalising the answer for a word the source
+     * actually contains. Stemming first and measuring the stem keeps the two
+     * sides symmetric: a token either survives in both or in neither.
+     */
+    private static Stream<String> contentStems(String text) {
+        return Arrays.stream(text.toLowerCase().split("\\W+"))
+                .map(AnswerQualityScorer::stem)
+                .filter(stem -> stem.length() >= MIN_WORD_LENGTH)
+                .filter(stem -> !STOPWORD_STEMS.contains(stem));
+    }
+
+    /**
+     * Crude suffix stripping - enough to make "grows"/"grow",
+     * "raising"/"raise" and "adding"/"add" compare equal, and nothing more.
+     * The trailing "e" is dropped last so that a stripped "raising" ("rais")
+     * and a bare "raise" ("rais") land on the same stem.
+     *
+     * <p>A real stemmer (Porter, Snowball) would be more accurate, but it is a
+     * dependency and a behaviour change in a scorer whose whole value is being
+     * boringly reproducible across runs. The length guards keep short words
+     * intact rather than shredding them into ambiguous fragments.
+     */
+    private static String stem(String word) {
+        String stem = word;
+        if (stem.endsWith("ing") && stem.length() >= 6) {
+            stem = stem.substring(0, stem.length() - 3);
+        } else if (stem.endsWith("ed") && stem.length() >= 5) {
+            stem = stem.substring(0, stem.length() - 2);
+        } else if (stem.endsWith("ly") && stem.length() >= 5) {
+            stem = stem.substring(0, stem.length() - 2);
+        } else if (stem.endsWith("es") && stem.length() >= 5) {
+            stem = stem.substring(0, stem.length() - 2);
+        } else if (stem.endsWith("s") && !stem.endsWith("ss") && stem.length() >= 4) {
+            stem = stem.substring(0, stem.length() - 1);
+        }
+        if (stem.endsWith("e") && stem.length() >= 4) {
+            stem = stem.substring(0, stem.length() - 1);
+        }
+        return stem;
     }
 
     /**
@@ -187,18 +290,43 @@ final class AnswerQualityScorer {
      *
      * <p>Mixed- or lower-case facts (e.g. {@code "out of stock"}) are always
      * case-insensitive; they are phrases rather than enum values.
+     *
+     * <p><b>Alternatives</b>: a fact may list several acceptable wordings
+     * separated by {@code |}, and matches if ANY of them is stated - so
+     * {@code "out of stock|0 units"} is satisfied by either phrasing. This
+     * exists because a required fact is a claim, not a script: the inventory
+     * case demanded the literal phrase "out of stock" while forbidding "in
+     * stock", and the assistant answered "There are currently 0 units of
+     * product PROD-2002 in stock" - factually right, scored 0 twice over
+     * (the required phrase was absent, and the forbidden one matched inside
+     * the correct answer's own wording). The eval reported a model failure
+     * that was really a phrasing mismatch, and did so intermittently, which
+     * is the worst kind: a red case that goes green on a re-run teaches
+     * people to ignore the harness.
+     *
+     * <p>Each alternative is quoted and boundary-matched independently, so
+     * {@code |} is a separator here and never regex syntax the dataset can
+     * inject. The casing rule above is applied per alternative.
      */
     private static boolean mentions(String answer, String fact, boolean strictCase) {
-        String trimmed = fact.strip();
-        if (trimmed.isEmpty()) {
-            return false;
-        }
+        return ALTERNATIVE_SEPARATOR.splitAsStream(fact)
+                .map(String::strip)
+                .filter(alternative -> !alternative.isEmpty())
+                .anyMatch(alternative -> states(answer, alternative, strictCase));
+    }
+
+    /**
+     * Whether one literal wording - no alternatives left to expand - is
+     * asserted by the answer, under the boundary and casing rules described
+     * on {@link #mentions}.
+     */
+    private static boolean states(String answer, String literal, boolean strictCase) {
         // "ALL-CAPS" means at least one letter and no lowercase ones - so "42"
         // is not treated as a case-sensitive enum token.
-        boolean enumLikeToken = trimmed.chars().anyMatch(Character::isUpperCase)
-                && trimmed.chars().noneMatch(Character::isLowerCase);
+        boolean enumLikeToken = literal.chars().anyMatch(Character::isUpperCase)
+                && literal.chars().noneMatch(Character::isLowerCase);
         int flags = (strictCase && enumLikeToken) ? 0 : Pattern.CASE_INSENSITIVE;
-        return Pattern.compile("\\b" + Pattern.quote(trimmed) + "\\b", flags)
+        return Pattern.compile("\\b" + Pattern.quote(literal) + "\\b", flags)
                 .matcher(answer)
                 .find();
     }
