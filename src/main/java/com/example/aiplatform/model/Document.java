@@ -56,6 +56,21 @@ public class Document {
         this.metadata = metadata == null ? new LinkedHashMap<>() : new LinkedHashMap<>(metadata);
     }
 
+    /**
+     * Applied when a document is re-ingested from the same source. The content
+     * is re-chunked separately; what changes here is everything else the
+     * caller can revise - the title and the metadata facets.
+     *
+     * <p>{@code source} is not updatable: it is the key this document was
+     * found by, so changing it here would mean this is a different document.
+     * {@code createdAt} deliberately keeps its original value for the same
+     * reason - this row is an update, not a new arrival.
+     */
+    public void updateFrom(String title, Map<String, String> metadata) {
+        this.title = title;
+        this.metadata = metadata == null ? new LinkedHashMap<>() : new LinkedHashMap<>(metadata);
+    }
+
     public Long getId() {
         return id;
     }

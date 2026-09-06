@@ -49,7 +49,7 @@ class DocumentControllerTest {
     void postDocumentsIngestsAndReturnsSummary() throws Exception {
         when(documentIngestionService.ingest(
                 eq("Kafka Troubleshooting"), eq("kb/kafka.md"), eq("Restart the consumer group."), any()))
-                .thenReturn(new IngestDocumentResponse(1L, "Kafka Troubleshooting", 1));
+                .thenReturn(new IngestDocumentResponse(1L, "Kafka Troubleshooting", 1, false));
 
         mockMvc.perform(post("/api/documents")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -64,7 +64,7 @@ class DocumentControllerTest {
     @WithMockUser(roles = "ADMIN")
     void postDocumentsAsAdminIsAllowed() throws Exception {
         when(documentIngestionService.ingest(eq("Doc"), isNull(), eq("content"), any()))
-                .thenReturn(new IngestDocumentResponse(2L, "Doc", 1));
+                .thenReturn(new IngestDocumentResponse(2L, "Doc", 1, false));
 
         mockMvc.perform(post("/api/documents")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -135,7 +135,7 @@ class DocumentControllerTest {
     void postDocumentsPassesMetadataThroughToIngestion() throws Exception {
         when(documentIngestionService.ingest(eq("Runbook"), isNull(), eq("content"),
                 eq(java.util.Map.of("audience", "internal"))))
-                .thenReturn(new IngestDocumentResponse(3L, "Runbook", 1));
+                .thenReturn(new IngestDocumentResponse(3L, "Runbook", 1, false));
 
         mockMvc.perform(post("/api/documents")
                         .contentType(MediaType.APPLICATION_JSON)

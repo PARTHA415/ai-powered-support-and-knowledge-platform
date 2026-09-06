@@ -76,17 +76,32 @@ public class QuestionAnsweringServiceImpl implements QuestionAnsweringService {
 
     @Override
     public AskResponse answer(String question) {
+        return answer(question, true);
+    }
+
+    @Override
+    public AskResponse answerWithoutCache(String question) {
+        return answer(question, false);
+    }
+
+    private AskResponse answer(String question, boolean useCache) {
         // The injection guard runs BEFORE the cache lookup, not after. A
         // rejected question must be rejected whether or not something similar
         // was answered earlier - otherwise the cache becomes a way to get a
-        // blocked question served.
+        // blocked question served. It also runs on the uncached path: bypassing
+        // the cache must not bypass a guardrail.
         promptInjectionGuard.assertSafe(question);
 
+        // Still embedded on the uncached path, because retrieval needs it a
+        // moment later anyway and EmbeddingService is itself Redis-cached - so
+        // this costs a lookup, not a billed call.
         float[] questionEmbedding = embeddingService.embed(question);
-        Optional<AskResponse> cached = semanticAnswerCache.lookup(question, questionEmbedding);
-        if (cached.isPresent()) {
-            log.debug("Answered '{}' from the semantic cache", question);
-            return cached.get();
+        if (useCache) {
+            Optional<AskResponse> cached = semanticAnswerCache.lookup(question, questionEmbedding);
+            if (cached.isPresent()) {
+                log.debug("Answered '{}' from the semantic cache", question);
+                return cached.get();
+            }
         }
 
         List<SemanticSearchResult> retrieved = semanticSearchService.search(question, ragProperties.topK());
@@ -110,7 +125,7 @@ public class QuestionAnsweringServiceImpl implements QuestionAnsweringService {
         // "I don't have enough information" answer is correct today and wrong
         // the moment the missing document is ingested - caching it would keep
         // serving the gap for the whole TTL after it had been filled.
-        if (!relevant.isEmpty()) {
+        if (useCache && !relevant.isEmpty()) {
             semanticAnswerCache.store(question, questionEmbedding, response);
         }
         return response;

@@ -40,7 +40,11 @@ public class RagEvaluatorImpl implements RagEvaluator {
         RetrievalMetrics retrievalMetrics =
                 AnswerQualityScorer.retrievalMetrics(retrievedTitles, evaluationCase.expectedRelevantDocumentTitles());
 
-        AskResponse response = questionAnsweringService.answer(evaluationCase.question());
+        // Deliberately the uncached path: a cached answer would make this
+        // measure what the pipeline produced at some earlier point, under an
+        // earlier corpus and an earlier prompt, which is the one thing an
+        // evaluation must never do. See QuestionAnsweringService.
+        AskResponse response = questionAnsweringService.answerWithoutCache(evaluationCase.question());
 
         double relevance = AnswerQualityScorer.relevanceScore(response.answer(), evaluationCase.expectedAnswerKeywords());
         double groundedness = AnswerQualityScorer.groundednessScore(response.answer(), response.sources());

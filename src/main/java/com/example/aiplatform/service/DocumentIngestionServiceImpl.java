@@ -86,9 +86,10 @@ public class DocumentIngestionServiceImpl implements DocumentIngestionService {
 
         embedInBatches(stored.chunkIds(), chunks);
 
-        log.info("Ingested document {} ('{}') as {} chunk(s) using embedding model {}",
+        log.info("{} document {} ('{}') as {} chunk(s) using embedding model {}",
+                stored.replaced() ? "Re-ingested" : "Ingested",
                 stored.documentId(), stored.title(), chunks.size(), embeddingService.modelName());
-        return new IngestDocumentResponse(stored.documentId(), stored.title(), chunks.size());
+        return new IngestDocumentResponse(stored.documentId(), stored.title(), chunks.size(), stored.replaced());
     }
 
     /**

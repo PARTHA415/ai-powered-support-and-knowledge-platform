@@ -127,7 +127,7 @@ class DocumentIngestionServiceImplTest {
                 .thenAnswer(invocation -> {
                     List<String> chunks = invocation.getArgument(3);
                     List<Long> ids = IntStream.range(0, chunks.size()).mapToObj(Long::valueOf).toList();
-                    return new DocumentPersistence.StoredDocument(1L, invocation.getArgument(0), ids);
+                    return new DocumentPersistence.StoredDocument(1L, invocation.getArgument(0), ids, false);
                 });
     }
 
